@@ -1,0 +1,17 @@
+### Get recent delay observations for a trip
+GET http://localhost:8080/api/v1/trips/1/delays?limit=10
+Accept: application/json
+
+
+### Calculate Trip reliability
+GET http://localhost:8080/api/v1/trips/1/reliability
+Accept: application/json
+
+###
+POST http://localhost:8080/api/v1/nta/realtime/trip-updates/publish?feedVersionId=1&limit=3
+
+###
+GET http://localhost:8080/api/v1/dashboard/summary?feedVersionId=1&hours=24
+
+###
+GET http://localhost:8080/api/v1/routes/45/stops/delays?hours=24&limit=10

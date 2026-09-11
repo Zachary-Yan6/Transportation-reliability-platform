@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!--
+      EI_EXPOSE_REP2 is a false positive for the listed immutable Spring
+      constructor references to container-managed collaborators. These classes
+      do not return the references and copying ObjectMapper, KafkaTemplate,
+      Redis, MyBatis mappers, or other services would break configuration.
+      DTO and configuration collections remain analysed and are defensively
+      copied in source code. ApiErrorResponseBuilder is also safe because the
+      target ApiErrorResponse constructor copies fieldErrors before storage.
+    -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+        <Or>
+            <Class name="com.zachary.transportation_reliability_platform.common.response.ApiErrorResponse$ApiErrorResponseBuilder"/>
+            <Class name="com.zachary.transportation_reliability_platform.controller.GtfsImportController"/>
+            <Class name="com.zachary.transportation_reliability_platform.controller.NtaServiceAlertController"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.DashboardServiceImpl"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.DelayPredictionServiceImpl"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.NtaRealtimeIngestionService"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.NtaRealtimeInspectionService"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.NtaServiceAlertIngestionService"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.NtaStaticGtfsRefreshService"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.NtaVehiclePositionIngestionService"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.PredictionReadinessServiceImpl"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.PredictionTrainingDataServiceImpl"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.RedisLiveTripStateService"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.RedisLiveVehiclePositionService"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.RouteReliabilityServiceImpl"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.impl.TripReliabilityServiceImpl"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.producer.TripUpdateEventProducer"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.producer.VehiclePositionEventProducer"/>
+            <Class name="com.zachary.transportation_reliability_platform.service.scheduler.NtaServiceAlertPollingJob"/>
+            <Class name="com.zachary.transportation_reliability_platform.websocket.LiveUpdateWebSocketHandler"/>
+        </Or>
+    </Match>
+</FindBugsFilter>

@@ -1,0 +1,34 @@
+@baseUrl = http://localhost:8080
+@feedVersionId = 1
+
+# Replace these after calling GET /api/v1/routes.
+@routeId = 100
+@tripId = 1
+
+### 1. Confirm that the NTA live feed is reachable.
+GET {{baseUrl}}/api/v1/nta/realtime/summary
+
+### 2. Preview real NTA stop-level delay updates.
+GET {{baseUrl}}/api/v1/nta/realtime/trip-updates/preview?limit=5
+
+### 3. Publish up to three valid NTA updates through Kafka.
+# This is safe to rerun because identical feed snapshots use deterministic event IDs.
+POST {{baseUrl}}/api/v1/nta/realtime/trip-updates/publish?feedVersionId={{feedVersionId}}&limit=3
+
+### 4. Read the dashboard summary for the last 24 hours.
+GET {{baseUrl}}/api/v1/dashboard/summary?feedVersionId={{feedVersionId}}&hours=24
+
+### 5. List routes and select a valid internal route ID.
+GET {{baseUrl}}/api/v1/routes
+
+### 6. Get reliability for one route.
+GET {{baseUrl}}/api/v1/routes/{{routeId}}/reliability
+
+### 7. Find the least reliable routes in the last seven days.
+GET {{baseUrl}}/api/v1/routes/reliability/worst?feedVersionId={{feedVersionId}}&hours=168&limit=10
+
+### 8. Get the latest delay observations for one internal trip ID.
+GET {{baseUrl}}/api/v1/trips/{{tripId}}/delays?limit=10
+
+### 9. Get reliability for one internal trip ID.
+GET {{baseUrl}}/api/v1/trips/{{tripId}}/reliability

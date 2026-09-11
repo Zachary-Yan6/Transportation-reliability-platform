@@ -1,0 +1,160 @@
+spring:
+  application:
+    name: transportation-reliability-platform
+  servlet:
+    multipart:
+      max-file-size: 200MB
+      max-request-size: 200MB
+
+
+  datasource:
+    url: jdbc:postgresql://localhost:5433/transit_reliability
+    username: transit
+    password: transit_dev_password
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  kafka:
+    # Spring Boot runs on Windows and connects through Docker's mapped port.
+    bootstrap-servers: localhost:9093
+
+    producer:
+      # Kafka message keys are plain strings.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+      # TripUpdateEvent objects are converted to JSON automatically.
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+    consumer:
+      group-id: trip-delay-observation-consumer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+      # Convert Kafka JSON directly into TripUpdateEvent.
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+
+      properties:
+        # Only allow JSON types from this application's event package.
+        spring.json.trusted.packages: com.zachary.transportation_reliability_platform.event
+
+        # Use TripUpdateEvent when Kafka type information is unavailable.
+        spring.json.value.default.type: com.zachary.transportation_reliability_platform.event.TripUpdateEvent
+
+    listener:
+      ack-mode: record
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      connect-timeout: 2s
+      timeout: 2s
+
+mybatis-plus:
+  mapper-locations: "classpath*:mapper/**/*.xml"
+  # Register custom conversions such as Java UUID to PostgreSQL uuid.
+  type-handlers-package: com.zachary.transportation_reliability_platform.config.mybatis
+  type-aliases-package: com.zachary.transportation_reliability_platform.entity
+  configuration:
+    map-underscore-to-camel-case: true
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    # Keep full-network polling observable without producing one line per
+    # stop update. Enable DEBUG temporarily while troubleshooting.
+    com.zachary.transportation_reliability_platform: INFO
+    org.apache.ibatis: WARN
+    org.springframework.jdbc: WARN
+app:
+  live-state:
+    # A live NTA update is no longer presented as current after fifteen
+    # minutes. Historical records remain safely stored in PostgreSQL.
+    ttl-seconds: 900
+
+  live-vehicle-state:
+    # Vehicle positions are only shown while they remain fresh. Each NTA poll
+    # overwrites the vehicle's latest position in Redis.
+    ttl-seconds: 900
+
+  live-updates:
+    # Browser clients only receive an invalidation signal. They continue to
+    # retrieve the actual state through the existing REST endpoints.
+    allowed-origin-patterns: ${LIVE_UPDATE_ALLOWED_ORIGINS:http://localhost:5173}
+
+  nta:
+    static-gtfs:
+      # This is the same public static archive used for the initial manual import.
+      url: ${NTA_STATIC_GTFS_URL:https://www.transportforireland.ie/transitData/Data/GTFS_Realtime.zip}
+      max-archive-bytes: 200000000
+      polling:
+        enabled: ${NTA_STATIC_GTFS_POLLING_ENABLED:false}
+        initial-delay-ms: 120000
+        fixed-delay-ms: 21600000
+    gtfs-realtime:
+      url: https://api.nationaltransport.ie/gtfsr/v2/gtfsr?format=json
+      # Copy the exact request URL from the NTA portal's "vehicles" operation.
+      # It is intentionally an environment variable: NTA can change routes
+      # and access can vary by subscription.
+      vehicles-url: ${NTA_VEHICLES_URL:}
+      # Copy the exact request URL from the NTA portal's "alerts" operation.
+      alerts-url: ${NTA_ALERTS_URL:}
+      api-key: ${NTA_API_KEY:}
+      subscription-key-header: ${NTA_API_KEY_HEADER:x-api-key}
+    realtime-polling:
+      enabled: true
+      feed-version-id: 1
+
+      # Leave this blank to collect every imported route. Set an exact NTA
+      # route ID only for a controlled, single-route troubleshooting run.
+      target-external-route-id: ""
+
+      # 0 means publish every valid stop update in the current NTA snapshot.
+      # A positive value is an explicit limit for manual/staged testing.
+      max-events-per-run: 0
+
+      # Records are sent to Kafka concurrently in bounded groups. This is not
+      # a data limit: every batch is sent before the polling run succeeds.
+      publication-batch-size: 250
+
+      initial-delay-ms: 30000
+      fixed-delay-ms: 300000
+
+    vehicle-position-polling:
+      # Enable this after setting NTA_VEHICLES_URL in the Spring Boot run
+      # configuration. It is separate from trip-update polling by design.
+      enabled: ${NTA_VEHICLE_POLLING_ENABLED:false}
+      # The three GTFS-Realtime operations share one NTA token. Start this
+      # 90 seconds after trip updates so the account stays below the current
+      # one-request-per-minute fair-use limit.
+      initial-delay-ms: 120000
+      fixed-delay-ms: 300000
+
+    alert-polling:
+      # Enable this only after NTA_ALERTS_URL has been configured.
+      enabled: ${NTA_ALERT_POLLING_ENABLED:false}
+      # This starts another 90 seconds later than vehicle positions.
+      initial-delay-ms: 210000
+      fixed-delay-ms: 300000
+
+    # Runs after polling so Kafka Consumer writes are visible to anomaly checks.
+    alert-monitoring:
+      enabled: true
+      evaluation-window-hours: 1
+      initial-delay-ms: 90000
+      fixed-delay-ms: 300000

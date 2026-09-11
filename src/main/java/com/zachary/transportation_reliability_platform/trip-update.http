@@ -1,0 +1,12 @@
+### Send a simulated trip delay event
+POST http://localhost:8080/api/v1/events/trip-updates
+Content-Type: application/json
+
+{
+  "feedVersionId": 1,
+  "externalTripId": "5760_1",
+  "externalStopId": "8260B1338501",
+  "stopSequence": 10,
+  "delaySeconds": 180
+}
+

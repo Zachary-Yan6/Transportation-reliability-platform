@@ -1,0 +1,64 @@
+name: Backend quality gate
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# The workflow only reads the repository. It never deploys code or accesses
+# runtime API keys: Testcontainers creates disposable local infrastructure.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Test, inspect, and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # This runs unit tests, JaCoCo's 90% line / 85% branch quality gate,
+      # SpotBugs, and the PostgreSQL + Kafka + Redis integration test.
+      - name: Run backend quality gate
+        run: mvn --batch-mode --no-transfer-progress verify
+
+      - name: Upload JaCoCo report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload SpotBugs report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotbugs-report
+          path: |
+            target/site/spotbugs.html
+            target/spotbugsXml.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload integration-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failsafe-reports
+          path: target/failsafe-reports
+          if-no-files-found: warn
+          retention-days: 14
