@@ -17,6 +17,8 @@ import java.time.ZoneOffset;
 
 /**
  * Provides explainable baseline delay predictions.
+ * reviewed
+ * Conduct backtesting and evaluation of the baseline/AI model.
  */
 @RestController
 @RequestMapping("/api/v1/ai/routes")
@@ -42,6 +44,20 @@ public class DelayPredictionController {
                 ? OffsetDateTime.now(ZoneOffset.UTC)
                 : targetTime;
 
+        /**
+         * routeId,
+         * stopId,
+         * targetTime,
+         * targetDayOfWeek,
+         * targetHour,
+         * predictedDelaySeconds,
+         * p90DelaySeconds,
+         * matchedSampleCount,
+         * dataSource,
+         * confidence,
+         * modelVersion,
+         * explanation
+         */
         return delayPredictionService.predictDelay(
                 routeId,
                 stopId,

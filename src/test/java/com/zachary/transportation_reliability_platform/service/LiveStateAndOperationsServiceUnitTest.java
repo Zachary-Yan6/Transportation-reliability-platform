@@ -22,6 +22,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
@@ -37,9 +38,9 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -149,8 +150,7 @@ class LiveStateAndOperationsServiceUnitTest {
     }
 
     @Test
-    void redisTripStateUpdatesAHashAndRefreshesTheTripExpiry() throws Exception {
-        when(stringRedisTemplate.opsForHash()).thenReturn(hashOperations);
+    void redisTripStateWritesOnlyWhenItsObservationIsNotOlder() throws Exception {
         when(objectMapper.writeValueAsString(any())).thenReturn("serialized-trip");
         RedisLiveTripStateService service = new RedisLiveTripStateService(
                 stringRedisTemplate,
@@ -160,8 +160,17 @@ class LiveStateAndOperationsServiceUnitTest {
 
         service.update(tripEvent("STOP-2", 2));
 
-        verify(hashOperations).put("live:trip-delay:1:TRIP-1", "STOP-2:2", "serialized-trip");
-        verify(stringRedisTemplate).expire("live:trip-delay:1:TRIP-1", java.time.Duration.ofSeconds(60));
+        verify(stringRedisTemplate).execute(
+                any(DefaultRedisScript.class),
+                eq(List.of(
+                        "live:trip-delay:1:TRIP-1",
+                        "live:trip-delay:1:TRIP-1:observed-at"
+                )),
+                eq("STOP-2:2"),
+                eq("1789128000000"),
+                eq("serialized-trip"),
+                eq("60000")
+        );
     }
 
     @Test
@@ -193,7 +202,6 @@ class LiveStateAndOperationsServiceUnitTest {
 
     @Test
     void redisVehicleStateStoresCurrentPositionAndRejectsSerializationFailures() throws Exception {
-        when(stringRedisTemplate.opsForHash()).thenReturn(hashOperations);
         when(objectMapper.writeValueAsString(any())).thenReturn("serialized-vehicle");
         RedisLiveVehiclePositionService service = new RedisLiveVehiclePositionService(
                 stringRedisTemplate,
@@ -201,7 +209,13 @@ class LiveStateAndOperationsServiceUnitTest {
         );
 
         service.update(vehicleEvent("VEHICLE-1", "B"));
-        verify(hashOperations).put("live:vehicles", "VEHICLE-1", "serialized-vehicle");
+        verify(stringRedisTemplate).execute(
+                any(DefaultRedisScript.class),
+                eq(List.of("live:vehicles", "live:vehicles:observed-at")),
+                eq("VEHICLE-1"),
+                eq("1789128000000"),
+                eq("serialized-vehicle")
+        );
 
         when(objectMapper.writeValueAsString(any())).thenThrow(jsonError());
         assertThatThrownBy(() -> service.update(vehicleEvent("VEHICLE-2", "A")))
@@ -224,6 +238,9 @@ class LiveStateAndOperationsServiceUnitTest {
         entries.put("old", "stale");
         entries.put("bad", "corrupt");
         when(hashOperations.entries("live:vehicles")).thenReturn(entries);
+        when(hashOperations.entries("live:vehicles:observed-at")).thenReturn(
+                Map.of("old", "1789128000000", "bad", "1789128000000000")
+        );
         when(objectMapper.readValue("fresh-b", LiveVehiclePositionResponse.class))
                 .thenReturn(vehicleState("VEHICLE-2", "B", OffsetDateTime.now(ZoneOffset.UTC)));
         when(objectMapper.readValue("fresh-a", LiveVehiclePositionResponse.class))
@@ -235,7 +252,13 @@ class LiveStateAndOperationsServiceUnitTest {
         assertThat(service.findAll())
                 .extracting(LiveVehiclePositionResponse::externalRouteId)
                 .containsExactly("A", "B");
-        verify(hashOperations).delete(eq("live:vehicles"), any(Object[].class));
+        verify(stringRedisTemplate, times(2)).execute(
+                any(DefaultRedisScript.class),
+                eq(List.of("live:vehicles", "live:vehicles:observed-at")),
+                any(),
+                any(),
+                any()
+        );
     }
 
     private TripOperationServiceImpl tripOperationService() {

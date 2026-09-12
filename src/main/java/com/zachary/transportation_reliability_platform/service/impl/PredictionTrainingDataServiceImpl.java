@@ -38,12 +38,20 @@ public class PredictionTrainingDataServiceImpl
     @Override
     @Transactional(readOnly = true)
     public String exportRouteTrainingSamplesCsv(Long routeId, int limit) {
+        return exportRouteTrainingSamplesCsv(routeId, limit, 0);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public String exportRouteTrainingSamplesCsv(
+            Long routeId,
+            int limit,
+            int offset
+    ) {
         // CSV is intended for model training, so it permits a larger but
-        // still bounded download than the JSON inspection endpoint.
-        List<RouteDelayTrainingSampleResponse> samples = findSamples(
-                routeId,
-                limit,
-                MAXIMUM_CSV_SAMPLE_LIMIT
+        // still bounded page download than the JSON inspection endpoint.
+        List<RouteDelayTrainingSampleResponse> samples = findCsvPage(
+                routeId, limit, offset
         );
 
         StringBuilder csv = new StringBuilder();
@@ -59,6 +67,26 @@ public class PredictionTrainingDataServiceImpl
         }
 
         return csv.toString();
+    }
+
+    private List<RouteDelayTrainingSampleResponse> findCsvPage(
+            Long routeId,
+            int requestedLimit,
+            int requestedOffset
+    ) {
+        // Keep pagination deterministic and protect PostgreSQL from invalid
+        // LIMIT/OFFSET values supplied by an HTTP client.
+        routeService.getRequiredById(routeId);
+        int safeLimit = Math.min(
+                Math.max(requestedLimit, 1),
+                MAXIMUM_CSV_SAMPLE_LIMIT
+        );
+        int safeOffset = Math.max(requestedOffset, 0);
+        return delayObservationMapper.findTrainingSamplesPageByRouteId(
+                routeId,
+                safeLimit,
+                safeOffset
+        );
     }
 
     private List<RouteDelayTrainingSampleResponse> findSamples(

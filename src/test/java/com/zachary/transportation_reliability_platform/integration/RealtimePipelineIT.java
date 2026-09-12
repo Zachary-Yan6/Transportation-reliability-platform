@@ -3,12 +3,17 @@ package com.zachary.transportation_reliability_platform.integration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zachary.transportation_reliability_platform.event.TripUpdateEvent;
+import com.zachary.transportation_reliability_platform.entity.AppUser;
+import com.zachary.transportation_reliability_platform.security.JwtService;
 import com.zachary.transportation_reliability_platform.service.producer.TripUpdateEventProducer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -73,6 +78,9 @@ class RealtimePipelineIT {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private JwtService jwtService;
 
     @LocalServerPort
     private int port;
@@ -158,12 +166,26 @@ class RealtimePipelineIT {
     }
 
     private JsonNode getJson(String path) {
-        String response = restTemplate.getForObject("http://localhost:" + port + path, String.class);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(userToken());
+        String response = restTemplate.exchange(
+                "http://localhost:" + port + path,
+                HttpMethod.GET,
+                new HttpEntity<Void>(headers),
+                String.class
+        ).getBody();
         try {
             return objectMapper.readTree(response);
         } catch (java.io.IOException exception) {
             throw new AssertionError("Expected JSON response for " + path, exception);
         }
+    }
+
+    private String userToken() {
+        AppUser user = new AppUser();
+        user.setEmail("integration-user@example.test");
+        user.setRole("USER");
+        return jwtService.issue(user);
     }
 
     private void awaitUntil(String description, BooleanSupplier condition) {

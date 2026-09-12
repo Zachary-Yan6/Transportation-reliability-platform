@@ -9,9 +9,9 @@ import java.time.OffsetDateTime;
  *
  * <p>For a request about the present, {@code state=LIVE} means that the
  * value came from the short-lived NTA state in Redis. For a future request,
- * or when live state is unavailable, {@code state=PREDICTED} means that the
- * historical baseline was used instead. {@code state=UNAVAILABLE} means that
- * neither source has a value yet.</p>
+ * or when live state is unavailable, {@code state=PREDICTED} means that a
+ * promoted trained model or the historical baseline was used instead.
+ * {@code state=UNAVAILABLE} means that neither source has a value yet.</p>
  */
 public record TripStopDelayEstimateResponse(
         Long tripId,

@@ -18,6 +18,7 @@ import java.util.List;
 
 /**
  * API endpoints for AI prediction-data readiness.
+ * Exporting and inspecting data for Python model training
  */
 @RestController
 @RequestMapping("/api/v1/ai")
@@ -32,6 +33,15 @@ public class PredictionReadinessController {
             @PathVariable Long routeId
     ) {
         return predictionReadinessService.getRouteTrainingDataStatus(routeId);
+    }
+
+    /**
+     * Lists active-feed routes that meet every data-quality gate for offline
+     * model training. It deliberately does not start training inside the API.
+     */
+    @GetMapping("/routes/ready-for-training")
+    public List<RouteTrainingDataStatusResponse> getRoutesReadyForTraining() {
+        return predictionReadinessService.getRoutesReadyForTraining();
     }
 
     /**
@@ -57,10 +67,11 @@ public class PredictionReadinessController {
             produces = "text/csv")
     public ResponseEntity<String> downloadTrainingSamplesCsv(
             @PathVariable Long routeId,
-            @RequestParam(defaultValue = "10000") int limit
+            @RequestParam(defaultValue = "10000") int limit,
+            @RequestParam(defaultValue = "0") int offset
     ) {
         String csv = predictionTrainingDataService
-                .exportRouteTrainingSamplesCsv(routeId, limit);
+                .exportRouteTrainingSamplesCsv(routeId, limit, offset);
 
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("text/csv"))

@@ -107,6 +107,25 @@ class PredictionServiceUnitTest {
     }
 
     @Test
+    void readinessListsOnlyActiveFeedRoutesThatPassEveryGate() {
+        TripStopDelayObservationMapper mapper = mock(TripStopDelayObservationMapper.class);
+        RouteTrainingDataStatusRow collecting = trainingStatus(999, "72", 48);
+        collecting.setRouteId(6L);
+        RouteTrainingDataStatusRow ready = trainingStatus(1_000, "72", 48);
+        ready.setRouteId(7L);
+        when(mapper.findActiveFeedTrainingDataStatuses())
+                .thenReturn(List.of(collecting, ready));
+
+        var routes = new PredictionReadinessServiceImpl(
+                mock(RouteService.class), mapper
+        ).getRoutesReadyForTraining();
+
+        assertEquals(1, routes.size());
+        assertEquals(7L, routes.getFirst().routeId());
+        assertTrue(routes.getFirst().readyForBaseline());
+    }
+
+    @Test
     void trainingDataServiceClampsLimitsAndEscapesCsvValues() {
         RouteService routeService = mock(RouteService.class);
         TripStopDelayObservationMapper mapper = mock(TripStopDelayObservationMapper.class);
@@ -114,16 +133,22 @@ class PredictionServiceUnitTest {
         sample.setExternalTripId("trip,\"quoted\"");
         sample.setExternalStopId("first\nsecond");
         when(mapper.findTrainingSamplesByRouteId(3L, 1)).thenReturn(List.of(sample));
-        when(mapper.findTrainingSamplesByRouteId(3L, 10_000)).thenReturn(List.of(sample));
+        when(mapper.findTrainingSamplesPageByRouteId(3L, 10_000, 0))
+                .thenReturn(List.of(sample));
+        when(mapper.findTrainingSamplesPageByRouteId(3L, 10_000, 25))
+                .thenReturn(List.of(sample));
         PredictionTrainingDataServiceImpl service = new PredictionTrainingDataServiceImpl(routeService, mapper);
 
         assertEquals(1, service.getRouteTrainingSamples(3L, 0).size());
         String csv = service.exportRouteTrainingSamplesCsv(3L, 99_999);
+        assertTrue(service.exportRouteTrainingSamplesCsv(3L, 99_999, 25)
+                .contains("trip,\"\"quoted\"\""));
         assertTrue(csv.startsWith("event_id,route_id"));
         assertTrue(csv.contains("\"trip,\"\"quoted\"\"\""));
         assertTrue(csv.contains("\"first\nsecond\""));
         verify(mapper).findTrainingSamplesByRouteId(3L, 1);
-        verify(mapper).findTrainingSamplesByRouteId(3L, 10_000);
+        verify(mapper).findTrainingSamplesPageByRouteId(3L, 10_000, 0);
+        verify(mapper).findTrainingSamplesPageByRouteId(3L, 10_000, 25);
     }
 
     @Test

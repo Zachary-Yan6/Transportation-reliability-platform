@@ -76,6 +76,7 @@ public class NtaVehiclePositionIngestionService {
                 events.add(event);
             }
 
+            // publish all vehicle position update into kafka
             vehiclePositionEventProducer.publishBatch(events);
 
             return new NtaVehiclePositionIngestionResponse(

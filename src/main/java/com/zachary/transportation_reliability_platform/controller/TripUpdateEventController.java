@@ -12,6 +12,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * test api: A delay event is artificially introduced to verify the end-to-end pipeline: Kafka → PostgreSQL → Redis.
+ */
 @RestController
 @RequestMapping("/api/v1/events")
 @RequiredArgsConstructor

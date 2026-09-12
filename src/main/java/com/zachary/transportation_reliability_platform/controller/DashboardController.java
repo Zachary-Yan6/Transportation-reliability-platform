@@ -19,6 +19,7 @@ public class DashboardController {
 
     /**
      * Returns recent overall reliability statistics.
+     * reviewed
      */
     @GetMapping("/summary")
     public DashboardSummaryResponse getSummary(

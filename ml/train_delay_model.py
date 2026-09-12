@@ -35,6 +35,9 @@ MODEL_VERSION = "SKLEARN_RANDOM_FOREST_V1"
 BASELINE_VERSION = "FROZEN_HISTORICAL_AVERAGE_BASELINE_V1"
 MINIMUM_TIME_MATCHED_SAMPLES = 5
 MINIMUM_STOP_HISTORY_SAMPLES = 3
+# A route model can learn general patterns, but it must not be selected for a
+# stop that was barely represented in its own training split.
+MINIMUM_STOP_OBSERVATIONS = 20
 # A tiny MAE difference can be random variation in a small test set. A model
 # must improve by a meaningful margin before it may become a candidate.
 MINIMUM_MAE_IMPROVEMENT_SECONDS = 30
@@ -396,6 +399,20 @@ def build_report(
             "baselineMeanAbsoluteErrorSeconds": baseline_mae,
         },
         "promotionDecision": promotion_decision,
+        "deploymentEligibility": {
+            # Spring Boot reads this metadata before loading the joblib model.
+            # Counts come from the training split only, never from the held-out
+            # test period used to decide whether promotion is safe.
+            "minimumStopObservations": MINIMUM_STOP_OBSERVATIONS,
+            "trainedStopSampleCounts": {
+                str(stop_id): int(count)
+                for stop_id, count in train_frame.groupby("stop_id").size().items()
+            },
+            "note": (
+                "A promoted route model is used only for stops meeting the "
+                "minimum training-observation threshold."
+            ),
+        },
         "features": CATEGORICAL_FEATURES + NUMERIC_FEATURES,
         "target": TARGET_COLUMN,
     }

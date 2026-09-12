@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -34,6 +35,25 @@ public class PredictionReadinessServiceImpl
 
         RouteTrainingDataStatusRow statistics =
                 delayObservationMapper.getTrainingDataStatus(routeId);
+
+        return toResponse(statistics);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<RouteTrainingDataStatusResponse> getRoutesReadyForTraining() {
+        // Only active-feed routes are returned by the mapper. A previous GTFS
+        // version may have valid history, but it cannot receive new events.
+        return delayObservationMapper.findActiveFeedTrainingDataStatuses()
+                .stream()
+                .map(this::toResponse)
+                .filter(RouteTrainingDataStatusResponse::readyForBaseline)
+                .toList();
+    }
+
+    private RouteTrainingDataStatusResponse toResponse(
+            RouteTrainingDataStatusRow statistics
+    ) {
 
         boolean enoughObservations =
                 statistics.getObservationCount()

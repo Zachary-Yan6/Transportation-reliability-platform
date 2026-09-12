@@ -23,8 +23,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import com.zachary.transportation_reliability_platform.security.JwtAuthenticationFilter;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.FilterType;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
@@ -51,12 +55,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * MVC-slice tests: Spring creates the controller, JSON conversion, validation,
  * and controller advice, while every external service is a Mockito mock.
  */
-@WebMvcTest({
+@WebMvcTest(controllers = {
         DashboardController.class,
         RouteController.class,
         TripUpdateEventController.class,
         TripOperationController.class
-})
+}, excludeFilters = @ComponentScan.Filter(
+        type = FilterType.ASSIGNABLE_TYPE,
+        classes = JwtAuthenticationFilter.class
+))
+@AutoConfigureMockMvc(addFilters = false)
 @ContextConfiguration(classes = ApiControllerWebMvcTest.MvcTestConfiguration.class)
 class ApiControllerWebMvcTest {
 

@@ -23,6 +23,7 @@ public class DashboardServiceImpl implements DashboardService {
         // Limit the time window to one hour through seven days.
         int safeHours = Math.min(Math.max(hours, 1), 168);
 
+        // return delay observation during specific session
         DashboardStatisticsRow statistics =
                 delayObservationMapper.calculateDashboardSummary(
                         feedVersionId,

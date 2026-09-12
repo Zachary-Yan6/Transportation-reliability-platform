@@ -18,7 +18,11 @@ import com.zachary.transportation_reliability_platform.service.impl.NtaVehiclePo
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import com.zachary.transportation_reliability_platform.security.JwtAuthenticationFilter;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.FilterType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.OffsetDateTime;
@@ -39,7 +43,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Collaborators are mocked so these tests exercise request binding and HTTP
  * contracts without calling NTA, Redis, Kafka, or PostgreSQL.
  */
-@WebMvcTest({
+@WebMvcTest(controllers = {
         NtaRealtimeController.class,
         NtaServiceAlertController.class,
         NtaStaticGtfsController.class,
@@ -47,7 +51,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         PredictionReadinessController.class,
         DelayPredictionController.class,
         TripStopDelayEstimateController.class
-})
+}, excludeFilters = @ComponentScan.Filter(
+        type = FilterType.ASSIGNABLE_TYPE,
+        classes = JwtAuthenticationFilter.class
+))
+@AutoConfigureMockMvc(addFilters = false)
 class ExternalDataControllerWebMvcTest {
 
     @Autowired
@@ -144,7 +152,7 @@ class ExternalDataControllerWebMvcTest {
     void trainingSampleEndpointsRespectLimitsAndExposeCsvAsADownload() throws Exception {
         when(predictionTrainingDataService.getRouteTrainingSamples(3L, 500))
                 .thenReturn(List.of());
-        when(predictionTrainingDataService.exportRouteTrainingSamplesCsv(3L, 10000))
+        when(predictionTrainingDataService.exportRouteTrainingSamplesCsv(3L, 10000, 0))
                 .thenReturn("stop_id,actual_delay_seconds\n1,20\n");
 
         mockMvc.perform(get("/api/v1/ai/routes/3/training-samples"))
@@ -157,7 +165,19 @@ class ExternalDataControllerWebMvcTest {
                         "attachment; filename=\"route-3-delay-training-samples.csv\""));
 
         verify(predictionTrainingDataService).getRouteTrainingSamples(3L, 500);
-        verify(predictionTrainingDataService).exportRouteTrainingSamplesCsv(3L, 10000);
+        verify(predictionTrainingDataService).exportRouteTrainingSamplesCsv(3L, 10000, 0);
+    }
+
+    @Test
+    void readyRoutesEndpointDelegatesToTheReadinessService() throws Exception {
+        when(predictionReadinessService.getRoutesReadyForTraining())
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/api/v1/ai/routes/ready-for-training"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isArray());
+
+        verify(predictionReadinessService).getRoutesReadyForTraining();
     }
 
     @Test

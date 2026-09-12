@@ -3,6 +3,7 @@ package com.zachary.transportation_reliability_platform.service;
 import com.zachary.transportation_reliability_platform.common.exception.BusinessException;
 import com.zachary.transportation_reliability_platform.dto.DelayPredictionResponse;
 import com.zachary.transportation_reliability_platform.dto.LiveTripStopDelayResponse;
+import com.zachary.transportation_reliability_platform.dto.TrainedDelayModelPrediction;
 import com.zachary.transportation_reliability_platform.dto.TripStopDelayEstimateResponse;
 import com.zachary.transportation_reliability_platform.entity.Stop;
 import com.zachary.transportation_reliability_platform.entity.StopTime;
@@ -18,6 +19,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,6 +42,8 @@ class TripStopDelayEstimateServiceUnitTest {
     private StopTimeService stopTimeService;
     @Mock
     private LiveTripStateService liveTripStateService;
+    @Mock
+    private TrainedDelayModelService trainedDelayModelService;
     @Mock
     private DelayPredictionService delayPredictionService;
 
@@ -64,6 +68,36 @@ class TripStopDelayEstimateServiceUnitTest {
         assertThat(result.state()).isEqualTo("LIVE");
         assertThat(result.estimatedDelaySeconds()).isEqualByComparingTo("90");
         assertThat(result.source()).isEqualTo("NTA_REALTIME_REDIS");
+        verify(trainedDelayModelService, never()).predictIfEligible(any(), any());
+        verify(delayPredictionService, never()).predictDelay(any(), any(), any());
+    }
+
+    @Test
+    void futureRequestUsesAnEligibleTrainedModelBeforeHistoricalFallback() {
+        TripStopDelayEstimateServiceImpl service = service();
+        Trip trip = trip();
+        Stop stop = stop(1L, "STOP-1");
+        StopTime scheduled = stopTime(1L, 1);
+        OffsetDateTime future = OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(5);
+        when(tripService.getRequiredById(10L)).thenReturn(trip);
+        when(stopService.getRequiredById(1L)).thenReturn(stop);
+        when(stopTimeService.findByTripId(10L)).thenReturn(List.of(scheduled));
+        when(liveTripStateService.findByTrip(2L, "TRIP-10")).thenReturn(List.of());
+        when(trainedDelayModelService.predictIfEligible(eq(5L), any()))
+                .thenReturn(Optional.of(new TrainedDelayModelPrediction(
+                        BigDecimal.valueOf(245),
+                        42L,
+                        "SKLEARN_RANDOM_FOREST_V1",
+                        "MEDIUM",
+                        "Promoted model prediction"
+                )));
+
+        TripStopDelayEstimateResponse result = service.estimateDelay(10L, 1L, 1, future);
+
+        assertThat(result.state()).isEqualTo("PREDICTED");
+        assertThat(result.source()).isEqualTo("TRAINED_ROUTE_MODEL");
+        assertThat(result.estimatedDelaySeconds()).isEqualByComparingTo("245");
+        assertThat(result.modelVersion()).isEqualTo("SKLEARN_RANDOM_FOREST_V1");
         verify(delayPredictionService, never()).predictDelay(any(), any(), any());
     }
 
@@ -169,6 +203,7 @@ class TripStopDelayEstimateServiceUnitTest {
                 stopService,
                 stopTimeService,
                 liveTripStateService,
+                trainedDelayModelService,
                 delayPredictionService
         );
     }
