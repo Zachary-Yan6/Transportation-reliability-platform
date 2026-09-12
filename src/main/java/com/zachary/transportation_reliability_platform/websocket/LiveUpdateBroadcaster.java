@@ -2,6 +2,7 @@ package com.zachary.transportation_reliability_platform.websocket;
 
 import com.zachary.transportation_reliability_platform.dto.LiveUpdateMessage;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -35,6 +36,11 @@ public class LiveUpdateBroadcaster {
     // may use its own concurrency strategy and SpotBugs correctly flags that pattern.
     private final Object pendingUpdatesMonitor = new Object();
 
+    /**
+     * Production constructor selected explicitly because the package-private
+     * scheduler constructor is retained for deterministic unit tests.
+     */
+    @Autowired
     public LiveUpdateBroadcaster(LiveUpdateWebSocketHandler liveUpdateWebSocketHandler) {
         this(liveUpdateWebSocketHandler, Executors.newSingleThreadScheduledExecutor(
                 runnable -> {
