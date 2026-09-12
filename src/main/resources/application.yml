@@ -82,6 +82,30 @@ logging:
     org.apache.ibatis: WARN
     org.springframework.jdbc: WARN
 app:
+  security:
+    # Replace the development fallback with a new Base64-encoded, 32-byte-or-
+    # longer secret before deployment. Changing it invalidates existing tokens.
+    jwt-secret: ${APP_JWT_SECRET:bG9jYWwtZGV2ZWxvcG1lbnQtc2VjcmV0LW11c3QtaGF2ZS1hdC1sZWFzdC0zMi1ieXRlcyEh}
+    jwt-expiration-seconds: ${APP_JWT_EXPIRATION_SECONDS:3600}
+    frontend-origin: ${APP_FRONTEND_ORIGIN:http://localhost:5173}
+    # An administrator is deliberately created only when both values are set.
+    # Never commit a real administrator password to this configuration file.
+    bootstrap-admin-email: ${APP_BOOTSTRAP_ADMIN_EMAIL:}
+    bootstrap-admin-password: ${APP_BOOTSTRAP_ADMIN_PASSWORD:}
+
+  ai:
+    trained-model:
+      # Keep Python model inference opt-in. The existing live and historical
+      # baseline path remains available on every developer machine and in CI.
+      enabled: ${AI_TRAINED_MODEL_ENABLED:false}
+      python-command: ${AI_PYTHON_COMMAND:python}
+      inference-script: ${AI_MODEL_INFERENCE_SCRIPT:ml/predict_delay.py}
+      artifacts-directory: ${AI_MODEL_ARTIFACTS_DIRECTORY:ml/artifacts}
+      # A route model may only predict a stop that appears often enough in its
+      # own training split. Sparse stops continue through the baseline fallback.
+      minimum-stop-observations: ${AI_MODEL_MINIMUM_STOP_OBSERVATIONS:20}
+      process-timeout-seconds: ${AI_MODEL_PROCESS_TIMEOUT_SECONDS:10}
+
   live-state:
     # A live NTA update is no longer presented as current after fifteen
     # minutes. Historical records remain safely stored in PostgreSQL.
@@ -115,6 +139,7 @@ app:
       # Copy the exact request URL from the NTA portal's "alerts" operation.
       alerts-url: ${NTA_ALERTS_URL:}
       api-key: ${NTA_API_KEY:}
+      # if there is no NTA_API_KEY_HEADER in env variable, then x-api-key by default
       subscription-key-header: ${NTA_API_KEY_HEADER:x-api-key}
     realtime-polling:
       enabled: true

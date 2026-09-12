@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -34,6 +35,27 @@ public class RedisLiveTripStateService implements LiveTripStateService {
     private static final String KEY_PREFIX = "live:trip-delay:";
     private static final String SOURCE = "NTA_REALTIME";
 
+    /**
+     * Writes the state and its ordering timestamp together. Redis executes the
+     * script atomically, so an older NTA event cannot overwrite a newer delay
+     * when consumers, manual requests, or application instances overlap.
+     */
+    private static final DefaultRedisScript<Long> PUT_IF_NOT_OLDER =
+            new DefaultRedisScript<>(
+                    """
+                    local existingObservedAt = redis.call('HGET', KEYS[2], ARGV[1])
+                    if not existingObservedAt or tonumber(ARGV[2]) >= tonumber(existingObservedAt) then
+                        redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
+                        redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
+                        redis.call('PEXPIRE', KEYS[1], ARGV[4])
+                        redis.call('PEXPIRE', KEYS[2], ARGV[4])
+                        return 1
+                    end
+                    return 0
+                    """,
+                    Long.class
+            );
+
     private final StringRedisTemplate stringRedisTemplate;
     private final ObjectMapper objectMapper;
 
@@ -56,13 +78,17 @@ public class RedisLiveTripStateService implements LiveTripStateService {
 
         try {
             String key = tripKey(event.feedVersionId(), event.externalTripId());
+            String field = stopField(event.externalStopId(), event.stopSequence());
+            String serializedState = objectMapper.writeValueAsString(state);
 
-            stringRedisTemplate.opsForHash().put(
-                    key,
-                    stopField(event.externalStopId(), event.stopSequence()),
-                    objectMapper.writeValueAsString(state)
+            stringRedisTemplate.execute(
+                    PUT_IF_NOT_OLDER,
+                    List.of(key, observedAtKey(key)),
+                    field,
+                    String.valueOf(event.observedAt().toEpochMilli()),
+                    serializedState,
+                    String.valueOf(Duration.ofSeconds(ttlSeconds).toMillis())
             );
-            stringRedisTemplate.expire(key, Duration.ofSeconds(ttlSeconds));
         } catch (JsonProcessingException exception) {
             // This is a coding/data-shape problem. Throwing lets the independent
             // live-state consumer retry without affecting PostgreSQL persistence.
@@ -109,5 +135,9 @@ public class RedisLiveTripStateService implements LiveTripStateService {
 
     private String stopField(String externalStopId, Integer stopSequence) {
         return externalStopId + ":" + stopSequence;
+    }
+
+    private String observedAtKey(String stateKey) {
+        return stateKey + ":observed-at";
     }
 }

@@ -20,6 +20,18 @@ public enum ErrorCode {
             HttpStatus.BAD_REQUEST
     ),
 
+    INVALID_CREDENTIALS(
+            "INVALID_CREDENTIALS",
+            "Email or password is incorrect",
+            HttpStatus.UNAUTHORIZED
+    ),
+
+    EMAIL_ALREADY_REGISTERED(
+            "EMAIL_ALREADY_REGISTERED",
+            "An account with this email already exists",
+            HttpStatus.CONFLICT
+    ),
+
     DUPLICATE_FEED_VERSION(
             "DUPLICATE_FEED_VERSION",
             "This GTFS feed has already been imported",

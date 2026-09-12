@@ -15,6 +15,11 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /** Inspection, synchronization, and dashboard endpoints for official NTA alerts. */
+
+/**
+ * no alert api
+ * reviewed
+ */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/v1/nta/alerts")

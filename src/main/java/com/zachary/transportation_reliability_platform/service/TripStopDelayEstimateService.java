@@ -6,7 +6,8 @@ import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
- * Selects a live delay or a historical prediction for one scheduled stop.
+ * Selects the best available delay source for one scheduled stop: live NTA
+ * state first, then an eligible trained model, then the historical baseline.
  */
 public interface TripStopDelayEstimateService {
 

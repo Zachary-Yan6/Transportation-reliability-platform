@@ -48,12 +48,20 @@ public class DelayPredictionServiceImpl
         routeService.getRequiredById(routeId);
         stopService.getRequiredById(stopId);
 
+        // convert to specific zone time
         ZonedDateTime localTargetTime = targetTime
                 .atZoneSameInstant(DUBLIN_TIME_ZONE);
+
 
         int dayOfWeek = localTargetTime.getDayOfWeek().getValue();
         int hour = localTargetTime.getHour();
 
+        // return delay of a stop in a day of week at a specific time
+        /**
+         * sampleCount;
+         * averageDelaySeconds;
+         * p90DelaySeconds;
+         */
         DelayBaselineStatisticsRow timeMatched =
                 delayObservationMapper.findTimeMatchedStopBaseline(
                         routeId,
@@ -63,6 +71,7 @@ public class DelayPredictionServiceImpl
                         targetTime
                 );
 
+        // prediction has to have enough observation
         if (hasAtLeast(timeMatched, MIN_TIME_MATCHED_SAMPLES)) {
             return predictionFromBaseline(
                     routeId,
@@ -77,6 +86,7 @@ public class DelayPredictionServiceImpl
             );
         }
 
+        // return general delay of a stop before some time
         DelayBaselineStatisticsRow stopHistory =
                 delayObservationMapper.findStopHistoryBaseline(
                         routeId,
@@ -98,6 +108,7 @@ public class DelayPredictionServiceImpl
             );
         }
 
+        // return general delay of a route before some time
         DelayBaselineStatisticsRow routeHistory =
                 delayObservationMapper.findRouteHistoryBaseline(
                         routeId,

@@ -12,6 +12,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * Development endpoints for checking and manually publishing NTA vehicles.
+ * reviewed
+ * test api: retrieve raw vehicle JSON and publish a few events to kafka
  */
 @RestController
 @RequestMapping("/api/v1/nta/vehicles")

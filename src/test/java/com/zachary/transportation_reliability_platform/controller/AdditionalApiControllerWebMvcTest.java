@@ -14,10 +14,14 @@ import com.zachary.transportation_reliability_platform.service.StopTimeService;
 import com.zachary.transportation_reliability_platform.service.TripReliabilityService;
 import com.zachary.transportation_reliability_platform.service.TripService;
 import com.zachary.transportation_reliability_platform.service.TripStopDelayObservationService;
+import com.zachary.transportation_reliability_platform.security.JwtAuthenticationFilter;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.FilterType;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -38,7 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * MVC-slice coverage for the read-only endpoints not exercised by the main
  * controller test. All collaborators are mocks; no database is required.
  */
-@WebMvcTest({
+@WebMvcTest(controllers = {
         StopController.class,
         TripScheduleController.class,
         TripReliabilityController.class,
@@ -46,7 +50,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         TripLiveStateController.class,
         LiveVehiclePositionController.class,
         ServiceAlertController.class
-})
+}, excludeFilters = @ComponentScan.Filter(
+        type = FilterType.ASSIGNABLE_TYPE,
+        classes = JwtAuthenticationFilter.class
+))
+@AutoConfigureMockMvc(addFilters = false)
 class AdditionalApiControllerWebMvcTest {
 
     @Autowired

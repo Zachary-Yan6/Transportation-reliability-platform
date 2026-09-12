@@ -4,6 +4,7 @@ import com.zachary.transportation_reliability_platform.common.exception.Business
 import com.zachary.transportation_reliability_platform.common.exception.ErrorCode;
 import com.zachary.transportation_reliability_platform.dto.DelayPredictionResponse;
 import com.zachary.transportation_reliability_platform.dto.LiveTripStopDelayResponse;
+import com.zachary.transportation_reliability_platform.dto.TrainedDelayModelPrediction;
 import com.zachary.transportation_reliability_platform.dto.TripStopDelayEstimateResponse;
 import com.zachary.transportation_reliability_platform.entity.Stop;
 import com.zachary.transportation_reliability_platform.entity.StopTime;
@@ -12,6 +13,8 @@ import com.zachary.transportation_reliability_platform.service.DelayPredictionSe
 import com.zachary.transportation_reliability_platform.service.LiveTripStateService;
 import com.zachary.transportation_reliability_platform.service.StopService;
 import com.zachary.transportation_reliability_platform.service.StopTimeService;
+import com.zachary.transportation_reliability_platform.service.TrainedDelayModelInput;
+import com.zachary.transportation_reliability_platform.service.TrainedDelayModelService;
 import com.zachary.transportation_reliability_platform.service.TripService;
 import com.zachary.transportation_reliability_platform.service.TripStopDelayEstimateService;
 import lombok.RequiredArgsConstructor;
@@ -34,8 +37,9 @@ import java.util.stream.Collectors;
  *
  * <p>Live NTA state is useful only for "now", so it is never returned for a
  * future target time. This prevents a current delay from being presented as a
- * forecast. The fallback is the existing explainable historical baseline,
- * rather than the experimental Python model.</p>
+ * forecast. When no fresh live value exists, an approved model is used only
+ * for stops with enough model-training data; otherwise the established
+ * historical baseline remains the safe fallback.</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -49,6 +53,7 @@ public class TripStopDelayEstimateServiceImpl
     private final StopService stopService;
     private final StopTimeService stopTimeService;
     private final LiveTripStateService liveTripStateService;
+    private final TrainedDelayModelService trainedDelayModelService;
     private final DelayPredictionService delayPredictionService;
 
     @Override
@@ -137,6 +142,34 @@ public class TripStopDelayEstimateServiceImpl
             );
         }
 
+        // A trained model is optional and can only replace the baseline after
+        // its report approves promotion and this stop has adequate coverage.
+        // An empty result intentionally continues through the existing
+        // live-data-first fallback path instead of exposing a model failure.
+        Optional<TrainedDelayModelPrediction> trainedPrediction =
+                trainedDelayModelService.predictIfEligible(
+                        trip.getRouteId(),
+                        new TrainedDelayModelInput(
+                                stop.getId(),
+                                scheduledStop.getStopSequence(),
+                                scheduledStop.getArrivalSeconds(),
+                                scheduledStop.getDepartureSeconds(),
+                                targetTime
+                        )
+                );
+
+        if (trainedPrediction.isPresent()) {
+            return trainedModelResponse(
+                    trip,
+                    stop,
+                    scheduledStop,
+                    targetTime,
+                    trainedPrediction.get()
+            );
+        }
+
+        // This is the previous prediction flow. It remains the fallback when
+        // no suitable trained model exists for the requested stop.
         DelayPredictionResponse prediction = delayPredictionService.predictDelay(
                 trip.getRouteId(),
                 stop.getId(),
@@ -281,6 +314,33 @@ public class TripStopDelayEstimateServiceImpl
                 null,
                 prediction.matchedSampleCount(),
                 prediction.p90DelaySeconds(),
+                prediction.modelVersion(),
+                prediction.explanation()
+        );
+    }
+
+    private TripStopDelayEstimateResponse trainedModelResponse(
+            Trip trip,
+            Stop stop,
+            StopTime scheduledStop,
+            OffsetDateTime targetTime,
+            TrainedDelayModelPrediction prediction
+    ) {
+        return new TripStopDelayEstimateResponse(
+                trip.getId(),
+                trip.getRouteId(),
+                scheduledStop.getStopId(),
+                stop.getExternalStopId(),
+                stop.getStopName(),
+                scheduledStop.getStopSequence(),
+                targetTime,
+                prediction.predictedDelaySeconds(),
+                "PREDICTED",
+                "TRAINED_ROUTE_MODEL",
+                prediction.confidence(),
+                null,
+                prediction.trainingSampleCount(),
+                null,
                 prediction.modelVersion(),
                 prediction.explanation()
         );

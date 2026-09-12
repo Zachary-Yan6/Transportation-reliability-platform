@@ -15,6 +15,10 @@ import org.springframework.web.bind.annotation.*;
 import java.time.Duration;
 import java.util.List;
 
+/**
+ * reviewed
+ * test api: check NTA raw JSON and preview parsed JSON result
+ */
 @RestController
 @RequestMapping("/api/v1/nta/realtime")
 @RequiredArgsConstructor
@@ -29,6 +33,36 @@ public class NtaRealtimeController {
      */
     @GetMapping("/raw")
     public String getRawFeed() {
+        /**
+         * {
+         *     "header": {
+         *         "gtfs_realtime_version": "2.0",
+         *         "incrementality": "FULL_DATASET",
+         *         "timestamp": "1789169122"
+         *     },
+         *     "entity": [{
+         *             "id": "T1",
+         *             "trip_update": {
+         *                 "trip": {
+         *                     "trip_id": "5882_11423",
+         *                     "start_time": "20:20:00",
+         *                     "start_date": "20260911",
+         *                     "schedule_relationship": "SCHEDULED",
+         *                     "route_id": "DUB-WATERFORD-I",
+         *                     "direction_id": 1
+         *                 },
+         *                 "stop_time_update": [{
+         *                     "stop_sequence": 10,
+         *                     "arrival": {
+         *                         "delay": 2700
+         *                     },
+         *                     "stop_id": "8220IR0132",
+         *                     "schedule_relationship": "SCHEDULED"
+         *                 }],
+         *                 "timestamp": "1789169122"
+         *             }
+         *         }
+         */
         return ntaGtfsRealtimeClient.fetchRawFeed();
     }
 

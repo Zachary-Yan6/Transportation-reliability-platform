@@ -19,4 +19,11 @@ public interface PredictionTrainingDataService {
      * training notebook or Python script.
      */
     String exportRouteTrainingSamplesCsv(Long routeId, int limit);
+
+    /**
+     * Exports one chronological CSV page for offline batch training. Offset is
+     * explicit so callers can collect every labelled record without relying
+     * on an unbounded HTTP response.
+     */
+    String exportRouteTrainingSamplesCsv(Long routeId, int limit, int offset);
 }

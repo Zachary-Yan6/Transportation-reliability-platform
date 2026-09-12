@@ -506,6 +506,52 @@ public interface TripStopDelayObservationMapper
     );
 
     /**
+     * Returns readiness statistics for every route in the currently active
+     * static GTFS feed. Historical feed versions are intentionally excluded:
+     * their internal route IDs cannot receive new realtime observations.
+     */
+    @Select("""
+        SELECT
+            route.id AS route_id,
+            route.short_name AS route_short_name,
+
+            COUNT(observation.id) AS observation_count,
+            COUNT(DISTINCT observation.trip_id) AS unique_trip_count,
+            COUNT(DISTINCT observation.stop_id) AS unique_stop_count,
+            COUNT(
+                DISTINCT date_trunc('hour', observation.observed_at)
+            ) AS active_hour_count,
+            MIN(observation.observed_at) AS earliest_observed_at,
+            MAX(observation.observed_at) AS latest_observed_at,
+
+            COALESCE(
+                ROUND(
+                    EXTRACT(
+                        EPOCH FROM (
+                            MAX(observation.observed_at)
+                            - MIN(observation.observed_at)
+                        )
+                    ) / 3600.0,
+                    2
+                ),
+                0
+            ) AS coverage_hours
+
+        FROM routes route
+        INNER JOIN feed_versions feed_version
+            ON feed_version.id = route.feed_version_id
+            AND feed_version.lifecycle_status = 'ACTIVE'
+        LEFT JOIN trips trip
+            ON trip.route_id = route.id
+        LEFT JOIN trip_stop_delay_observations observation
+            ON observation.trip_id = trip.id
+
+        GROUP BY route.id, route.short_name
+        ORDER BY COUNT(observation.id) DESC, route.id ASC
+        """)
+    List<RouteTrainingDataStatusRow> findActiveFeedTrainingDataStatuses();
+
+    /**
      * Returns chronological, labelled samples for a route's delay-prediction
      * dataset. Local Dublin time is used for time-of-day model features.
      */
@@ -553,6 +599,59 @@ public interface TripStopDelayObservationMapper
     List<RouteDelayTrainingSampleResponse> findTrainingSamplesByRouteId(
             @Param("routeId") Long routeId,
             @Param("limit") int limit
+    );
+
+    /**
+     * Returns one stable page from a route's chronological training dataset.
+     * Batch training uses pages so a route with more than 10,000 observations
+     * is not silently trained from a truncated sample.
+     */
+    @Select("""
+        SELECT
+            observation.event_id,
+            trip.route_id,
+            observation.trip_id,
+            trip.external_trip_id,
+            observation.stop_id,
+            stop.external_stop_id,
+            observation.stop_sequence,
+
+            stop_time.arrival_seconds AS scheduled_arrival_seconds,
+            stop_time.departure_seconds AS scheduled_departure_seconds,
+
+            EXTRACT(
+                ISODOW FROM observation.observed_at
+                AT TIME ZONE 'Europe/Dublin'
+            )::INTEGER AS observed_day_of_week,
+
+            EXTRACT(
+                HOUR FROM observation.observed_at
+                AT TIME ZONE 'Europe/Dublin'
+            )::INTEGER AS observed_hour,
+
+            observation.observed_at,
+            observation.delay_seconds AS actual_delay_seconds
+
+        FROM trip_stop_delay_observations observation
+        INNER JOIN trips trip
+            ON trip.id = observation.trip_id
+        INNER JOIN stops stop
+            ON stop.id = observation.stop_id
+        INNER JOIN stop_times stop_time
+            ON stop_time.trip_id = observation.trip_id
+            AND stop_time.stop_id = observation.stop_id
+            AND stop_time.stop_sequence = observation.stop_sequence
+
+        WHERE trip.route_id = #{routeId}
+
+        ORDER BY observation.observed_at ASC, observation.id ASC
+        LIMIT #{limit}
+        OFFSET #{offset}
+        """)
+    List<RouteDelayTrainingSampleResponse> findTrainingSamplesPageByRouteId(
+            @Param("routeId") Long routeId,
+            @Param("limit") int limit,
+            @Param("offset") int offset
     );
 
     /**

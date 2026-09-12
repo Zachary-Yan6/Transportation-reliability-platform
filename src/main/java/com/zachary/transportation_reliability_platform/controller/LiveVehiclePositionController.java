@@ -14,6 +14,8 @@ import java.util.List;
 
 /**
  * Serves the latest fresh GPS positions for the live vehicle map.
+ * reviewed
+ *
  */
 @RestController
 @RequestMapping("/api/v1/vehicles")
@@ -30,6 +32,7 @@ public class LiveVehiclePositionController {
     public List<LiveVehiclePositionResponse> getLiveVehicles(
             @RequestParam(required = false) Long routeId
     ) {
+        // retrieve all vehicles position from redis
         List<LiveVehiclePositionResponse> vehicles =
                 liveVehiclePositionService.findAll();
 
