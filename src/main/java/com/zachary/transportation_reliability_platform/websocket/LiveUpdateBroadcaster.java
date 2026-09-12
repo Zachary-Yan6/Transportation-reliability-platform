@@ -30,6 +30,10 @@ public class LiveUpdateBroadcaster {
     private final Map<String, ScheduledFuture<?>> pendingUpdates = new ConcurrentHashMap<>();
     private final Map<String, Long> pendingVersions = new ConcurrentHashMap<>();
     private final AtomicLong notificationSequence = new AtomicLong();
+    // A dedicated monitor keeps the pending update and version maps consistent.
+    // Never synchronize on a java.util.concurrent collection: its implementation
+    // may use its own concurrency strategy and SpotBugs correctly flags that pattern.
+    private final Object pendingUpdatesMonitor = new Object();
 
     public LiveUpdateBroadcaster(LiveUpdateWebSocketHandler liveUpdateWebSocketHandler) {
         this(liveUpdateWebSocketHandler, Executors.newSingleThreadScheduledExecutor(
@@ -53,7 +57,7 @@ public class LiveUpdateBroadcaster {
     public void signalChange(String type) {
         long version = notificationSequence.incrementAndGet();
 
-        synchronized (pendingUpdates) {
+        synchronized (pendingUpdatesMonitor) {
             ScheduledFuture<?> scheduled = scheduler.schedule(
                     () -> broadcastIfCurrent(type, version),
                     DEBOUNCE_MILLISECONDS,
@@ -69,7 +73,7 @@ public class LiveUpdateBroadcaster {
     }
 
     private void broadcastIfCurrent(String type, long version) {
-        synchronized (pendingUpdates) {
+        synchronized (pendingUpdatesMonitor) {
             // Only the task that still owns this data kind may notify the
             // browser. A cancelled task that has just started must not remove
             // or broadcast over its newer replacement.
