@@ -5,6 +5,7 @@ import com.zachary.transportation_reliability_platform.dto.TripReliabilityRespon
 import com.zachary.transportation_reliability_platform.entity.Route;
 import com.zachary.transportation_reliability_platform.entity.Stop;
 import com.zachary.transportation_reliability_platform.entity.Trip;
+import com.zachary.transportation_reliability_platform.common.exception.LiveDataUnavailableException;
 import com.zachary.transportation_reliability_platform.service.LiveTripStateService;
 import com.zachary.transportation_reliability_platform.service.LiveVehiclePositionService;
 import com.zachary.transportation_reliability_platform.service.RouteService;
@@ -14,6 +15,7 @@ import com.zachary.transportation_reliability_platform.service.StopTimeService;
 import com.zachary.transportation_reliability_platform.service.TripReliabilityService;
 import com.zachary.transportation_reliability_platform.service.TripService;
 import com.zachary.transportation_reliability_platform.service.TripStopDelayObservationService;
+import com.zachary.transportation_reliability_platform.security.ApiRateLimitFilter;
 import com.zachary.transportation_reliability_platform.security.JwtAuthenticationFilter;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,7 +54,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         ServiceAlertController.class
 }, excludeFilters = @ComponentScan.Filter(
         type = FilterType.ASSIGNABLE_TYPE,
-        classes = JwtAuthenticationFilter.class
+        classes = {JwtAuthenticationFilter.class, ApiRateLimitFilter.class}
 ))
 @AutoConfigureMockMvc(addFilters = false)
 class AdditionalApiControllerWebMvcTest {
@@ -157,6 +159,17 @@ class AdditionalApiControllerWebMvcTest {
                 .andExpect(jsonPath("$[0].externalRouteId").value("B"));
 
         verify(routeService).getRequiredById(7L);
+    }
+
+    @Test
+    void liveVehicleEndpointReportsARedisOutageAsServiceUnavailable() throws Exception {
+        when(liveVehiclePositionService.findAll()).thenThrow(
+                new LiveDataUnavailableException("Redis offline", new IllegalStateException("offline"))
+        );
+
+        mockMvc.perform(get("/api/v1/vehicles/live"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("LIVE_DATA_UNAVAILABLE"));
     }
 
     @Test

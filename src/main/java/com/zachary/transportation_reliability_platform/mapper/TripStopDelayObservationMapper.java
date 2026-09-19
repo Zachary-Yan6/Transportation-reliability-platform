@@ -44,6 +44,40 @@ public interface TripStopDelayObservationMapper
     );
 
     /**
+     * Inserts one Kafka poll in a single PostgreSQL statement. The database,
+     * rather than a race-prone pre-check, decides which event IDs are new.
+     */
+    @Insert("""
+            <script>
+            INSERT INTO trip_stop_delay_observations (
+                event_id,
+                feed_version_id,
+                trip_id,
+                stop_id,
+                stop_sequence,
+                delay_seconds,
+                observed_at
+            ) VALUES
+            <foreach collection="observations" item="observation" separator=",">
+                (
+                    #{observation.eventId,
+                        typeHandler=com.zachary.transportation_reliability_platform.config.mybatis.PostgreSqlUuidTypeHandler},
+                    #{observation.feedVersionId},
+                    #{observation.tripId},
+                    #{observation.stopId},
+                    #{observation.stopSequence},
+                    #{observation.delaySeconds},
+                    #{observation.observedAt}
+                )
+            </foreach>
+            ON CONFLICT (event_id) DO NOTHING
+            </script>
+            """)
+    int insertBatchIfAbsent(
+            @Param("observations") List<TripStopDelayObservation> observations
+    );
+
+    /**
      * Returns the most recent delay observations for one internal trip ID.
      */
     @Select("""

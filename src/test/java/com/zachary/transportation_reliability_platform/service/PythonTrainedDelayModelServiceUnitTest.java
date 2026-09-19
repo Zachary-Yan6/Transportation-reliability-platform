@@ -2,6 +2,7 @@ package com.zachary.transportation_reliability_platform.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zachary.transportation_reliability_platform.config.TrainedDelayModelProperties;
+import com.zachary.transportation_reliability_platform.security.ModelInferenceConcurrencyLimiter;
 import com.zachary.transportation_reliability_platform.service.impl.PythonTrainedDelayModelService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,7 +48,7 @@ class PythonTrainedDelayModelServiceUnitTest {
 
         assertThat(service.predictIfEligible(316L, input(10L))).isEmpty();
 
-        writeArtifacts(316L, false, 100L);
+        writeArtifacts(316L, false, 1_501L, 8.0);
         assertThat(service.predictIfEligible(316L, input(10L))).isEmpty();
         verify(runner, never()).predict(any(), any());
     }
@@ -55,7 +56,7 @@ class PythonTrainedDelayModelServiceUnitTest {
     @Test
     void sparseStopsFallBackEvenWhenTheRouteModelWasPromoted() throws Exception {
         TrainedDelayModelRunner runner = mock(TrainedDelayModelRunner.class);
-        writeArtifacts(316L, true, 19L);
+        writeArtifacts(316L, true, 1_500L, 8.0);
 
         assertThat(service(true, runner).predictIfEligible(316L, input(10L))).isEmpty();
         verify(runner, never()).predict(any(), any());
@@ -75,9 +76,18 @@ class PythonTrainedDelayModelServiceUnitTest {
     }
 
     @Test
-    void promotedModelWithEnoughStopSamplesProducesPrediction() throws Exception {
+    void stopWithExactlySevenDaysOfHistoryFallsBack() throws Exception {
         TrainedDelayModelRunner runner = mock(TrainedDelayModelRunner.class);
-        Path modelPath = writeArtifacts(316L, true, 42L);
+        writeArtifacts(316L, true, 1_501L, 7.0);
+
+        assertThat(service(true, runner).predictIfEligible(316L, input(10L))).isEmpty();
+        verify(runner, never()).predict(any(), any());
+    }
+
+    @Test
+    void promotedModelWithEnoughStopSamplesAndHistoryProducesPrediction() throws Exception {
+        TrainedDelayModelRunner runner = mock(TrainedDelayModelRunner.class);
+        Path modelPath = writeArtifacts(316L, true, 1_501L, 7.01);
         when(runner.predict(eq(modelPath), any()))
                 .thenReturn(Optional.of(BigDecimal.valueOf(185.25)));
 
@@ -91,14 +101,14 @@ class PythonTrainedDelayModelServiceUnitTest {
                         prediction -> prediction.modelVersion(),
                         prediction -> prediction.confidence()
                 )
-                .containsExactly(BigDecimal.valueOf(185.25), 42L,
-                        "SKLEARN_RANDOM_FOREST_V1", "MEDIUM");
+                .containsExactly(BigDecimal.valueOf(185.25), 1_501L,
+                        "SKLEARN_RANDOM_FOREST_V1", "HIGH");
     }
 
     @Test
     void processFailureFallsBackToTheExistingPredictionPath() throws Exception {
         TrainedDelayModelRunner runner = mock(TrainedDelayModelRunner.class);
-        Path modelPath = writeArtifacts(316L, true, 120L);
+        Path modelPath = writeArtifacts(316L, true, 1_501L, 8.0);
         when(runner.predict(eq(modelPath), any()))
                 .thenThrow(new IllegalStateException("Python unavailable"));
 
@@ -106,9 +116,23 @@ class PythonTrainedDelayModelServiceUnitTest {
     }
 
     @Test
+    void fullInferenceBulkheadFallsBackWithoutStartingPython() throws Exception {
+        TrainedDelayModelRunner runner = mock(TrainedDelayModelRunner.class);
+        ModelInferenceConcurrencyLimiter bulkhead = mock(ModelInferenceConcurrencyLimiter.class);
+        writeArtifacts(316L, true, 1_501L, 8.0);
+
+        assertThat(service(true, runner, bulkhead)
+                .predictIfEligible(316L, input(10L))).isEmpty();
+
+        verify(bulkhead).tryAcquire();
+        verify(bulkhead, never()).release();
+        verify(runner, never()).predict(any(), any());
+    }
+
+    @Test
     void emptyRunnerResultFallsBackAndLargeStopCoverageIsHighConfidence() throws Exception {
         TrainedDelayModelRunner runner = mock(TrainedDelayModelRunner.class);
-        Path modelPath = writeArtifacts(316L, true, 120L);
+        Path modelPath = writeArtifacts(316L, true, 1_501L, 8.0);
         when(runner.predict(eq(modelPath), any()))
                 .thenReturn(Optional.empty())
                 .thenReturn(Optional.of(BigDecimal.TEN));
@@ -122,24 +146,38 @@ class PythonTrainedDelayModelServiceUnitTest {
             boolean enabled,
             TrainedDelayModelRunner runner
     ) {
+        ModelInferenceConcurrencyLimiter bulkhead = mock(ModelInferenceConcurrencyLimiter.class);
+        when(bulkhead.tryAcquire()).thenReturn(true);
+        return service(enabled, runner, bulkhead);
+    }
+
+    private PythonTrainedDelayModelService service(
+            boolean enabled,
+            TrainedDelayModelRunner runner,
+            ModelInferenceConcurrencyLimiter bulkhead
+    ) {
         return new PythonTrainedDelayModelService(
                 new TrainedDelayModelProperties(
                         enabled,
                         "python",
                         "ml/predict_delay.py",
                         temporaryDirectory.toString(),
-                        20,
+                        1_501,
+                        7.0,
+                        2,
                         10
                 ),
                 objectMapper,
-                runner
+                runner,
+                bulkhead
         );
     }
 
     private Path writeArtifacts(
             long routeId,
             boolean promoted,
-            long stopSamples
+            long stopSamples,
+            double stopCoverageDays
     ) throws Exception {
         Path routeDirectory = Files.createDirectories(
                 temporaryDirectory.resolve("route-" + routeId)
@@ -152,13 +190,17 @@ class PythonTrainedDelayModelServiceUnitTest {
                     "eligibleForManualPromotion": %s
                   },
                   "deploymentEligibility": {
-                    "minimumStopObservations": 20,
+                    "minimumStopObservations": 1501,
+                    "minimumStopCoverageDaysExclusive": 7,
                     "trainedStopSampleCounts": {
                       "10": %d
+                    },
+                    "trainedStopCoverageDays": {
+                      "10": %s
                     }
                   }
                 }
-                """.formatted(promoted, stopSamples);
+                """.formatted(promoted, stopSamples, stopCoverageDays);
         Files.writeString(routeDirectory.resolve("training_report.json"), report);
         return modelPath;
     }

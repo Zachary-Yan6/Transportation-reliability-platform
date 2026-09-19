@@ -2,6 +2,7 @@ package com.zachary.transportation_reliability_platform.service.impl;
 
 import com.zachary.transportation_reliability_platform.common.exception.BusinessException;
 import com.zachary.transportation_reliability_platform.common.exception.ErrorCode;
+import com.zachary.transportation_reliability_platform.common.exception.LiveDataUnavailableException;
 import com.zachary.transportation_reliability_platform.dto.DelayPredictionResponse;
 import com.zachary.transportation_reliability_platform.dto.LiveTripStopDelayResponse;
 import com.zachary.transportation_reliability_platform.dto.TrainedDelayModelPrediction;
@@ -18,6 +19,7 @@ import com.zachary.transportation_reliability_platform.service.TrainedDelayModel
 import com.zachary.transportation_reliability_platform.service.TripService;
 import com.zachary.transportation_reliability_platform.service.TripStopDelayEstimateService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,6 +44,7 @@ import java.util.stream.Collectors;
  * historical baseline remains the safe fallback.</p>
  */
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class TripStopDelayEstimateServiceImpl
         implements TripStopDelayEstimateService {
@@ -72,8 +75,7 @@ public class TripStopDelayEstimateServiceImpl
                 stopSequence
         );
 
-        List<LiveTripStopDelayResponse> liveDelays = liveTripStateService
-                .findByTrip(trip.getFeedVersionId(), trip.getExternalTripId());
+        List<LiveTripStopDelayResponse> liveDelays = findLiveDelaysOrEmpty(trip);
 
         return estimateScheduledStop(
                 trip,
@@ -102,8 +104,7 @@ public class TripStopDelayEstimateServiceImpl
                 .collect(Collectors.toMap(Stop::getId, Function.identity()));
 
         // Redis is read once for the complete trip, then matched in memory.
-        List<LiveTripStopDelayResponse> liveDelays = liveTripStateService
-                .findByTrip(trip.getFeedVersionId(), trip.getExternalTripId());
+        List<LiveTripStopDelayResponse> liveDelays = findLiveDelaysOrEmpty(trip);
 
         return scheduledStops.stream()
                 .map(scheduledStop -> estimateScheduledStop(
@@ -198,6 +199,23 @@ public class TripStopDelayEstimateServiceImpl
         }
 
         return stop;
+    }
+
+    /**
+     * Redis is an optional live-data optimization for delay estimation. During
+     * an outage, historical prediction remains authoritative and available.
+     */
+    private List<LiveTripStopDelayResponse> findLiveDelaysOrEmpty(Trip trip) {
+        try {
+            return liveTripStateService.findByTrip(
+                    trip.getFeedVersionId(),
+                    trip.getExternalTripId()
+            );
+        } catch (LiveDataUnavailableException exception) {
+            log.warn("Redis live state unavailable; using prediction fallback for trip {}",
+                    trip.getId());
+            return List.of();
+        }
     }
 
     private StopTime resolveScheduledStop(

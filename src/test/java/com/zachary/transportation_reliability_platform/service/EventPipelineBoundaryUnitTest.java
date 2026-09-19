@@ -1,6 +1,6 @@
 package com.zachary.transportation_reliability_platform.service;
 
-import com.zachary.transportation_reliability_platform.common.exception.BusinessException;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.zachary.transportation_reliability_platform.dto.PublishTripUpdateRequest;
 import com.zachary.transportation_reliability_platform.entity.Stop;
 import com.zachary.transportation_reliability_platform.entity.StopTime;
@@ -16,27 +16,25 @@ import com.zachary.transportation_reliability_platform.service.producer.VehicleP
 import com.zachary.transportation_reliability_platform.websocket.LiveUpdateBroadcaster;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.kafka.core.KafkaTemplate;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for Kafka-facing components. Kafka itself is never started: a
- * completed future represents Kafka's acknowledgement at this boundary.
+ * Unit tests for Kafka-facing components. Producers write to the durable
+ * PostgreSQL outbox; consumers are tested independently from Kafka itself.
  */
 class EventPipelineBoundaryUnitTest {
 
@@ -58,24 +56,30 @@ class EventPipelineBoundaryUnitTest {
     }
 
     @Test
-    void resolvedTripEventIsPersistedInUtcAndSignalsTheDashboard() {
+    void resolvedTripEventBatchIsPersistedInUtcAndSignalsTheDashboardOnce() {
         TripService tripService = mock(TripService.class);
         StopService stopService = mock(StopService.class);
         StopTimeService stopTimeService = mock(StopTimeService.class);
         TripStopDelayObservationService observationService =
                 mock(TripStopDelayObservationService.class);
         LiveUpdateBroadcaster broadcaster = mock(LiveUpdateBroadcaster.class);
-        when(observationService.saveIfAbsent(any())).thenReturn(true);
+        when(observationService.saveBatchIfAbsent(anyList())).thenReturn(2);
 
         TripUpdateEvent event = resolvedTripEvent();
+        TripUpdateEvent secondEvent = new TripUpdateEvent(
+                UUID.randomUUID(), 1L, "TRIP-2", "STOP-2", 3, 90,
+                Instant.parse("2026-09-11T12:01:00Z"), 8L, 9L
+        );
         new TripUpdateEventConsumer(
                 tripService, stopService, stopTimeService, observationService, broadcaster
-        ).consume(event);
+        ).consume(List.of(event, secondEvent));
 
-        ArgumentCaptor<TripStopDelayObservation> captor =
-                ArgumentCaptor.forClass(TripStopDelayObservation.class);
-        verify(observationService).saveIfAbsent(captor.capture());
-        TripStopDelayObservation saved = captor.getValue();
+        ArgumentCaptor<List> captor = ArgumentCaptor.forClass(List.class);
+        verify(observationService).saveBatchIfAbsent(captor.capture());
+        @SuppressWarnings("unchecked")
+        List<TripStopDelayObservation> savedBatch = captor.getValue();
+        assertThat(savedBatch).hasSize(2);
+        TripStopDelayObservation saved = savedBatch.getFirst();
         assertThat(saved.getEventId()).isEqualTo(event.eventId());
         assertThat(saved.getTripId()).isEqualTo(5L);
         assertThat(saved.getStopId()).isEqualTo(7L);
@@ -83,7 +87,7 @@ class EventPipelineBoundaryUnitTest {
                 event.observedAt().atOffset(ZoneOffset.UTC)
         );
         verify(broadcaster).signalChange("trip-delays");
-        verify(tripService, never()).getOne(any(), eq(false));
+        verify(tripService, never()).list(any(QueryWrapper.class));
     }
 
     @Test
@@ -94,24 +98,27 @@ class EventPipelineBoundaryUnitTest {
         TripStopDelayObservationService observationService =
                 mock(TripStopDelayObservationService.class);
         LiveUpdateBroadcaster broadcaster = mock(LiveUpdateBroadcaster.class);
-        when(observationService.saveIfAbsent(any())).thenReturn(false);
+        when(observationService.saveBatchIfAbsent(anyList())).thenReturn(0);
 
         new TripUpdateEventConsumer(
                 tripService, stopService, stopTimeService, observationService, broadcaster
-        ).consume(resolvedTripEvent());
+        ).consume(List.of(resolvedTripEvent()));
 
         TripUpdateEvent fallbackEvent = new TripUpdateEvent(
                 UUID.randomUUID(), 1L, "MISSING", "STOP-1", 2, 10,
                 Instant.parse("2026-09-11T12:00:00Z")
         );
-        when(tripService.getOne(any(), eq(false))).thenReturn(null);
+        when(tripService.list(any(QueryWrapper.class))).thenReturn(List.of());
         new TripUpdateEventConsumer(
                 tripService, stopService, stopTimeService, observationService, broadcaster
-        ).consume(fallbackEvent);
+        ).consume(List.of(fallbackEvent));
 
-        verify(observationService).saveIfAbsent(any());
+        verify(observationService, times(1)).saveBatchIfAbsent(anyList());
         verify(broadcaster, never()).signalChange("trip-delays");
-        verify(stopService, never()).getOne(any(), eq(false));
+        // Fallback resolves both reference sets in bounded queries before it
+        // determines that this event has no matching trip.
+        verify(stopService).list(any(QueryWrapper.class));
+        verify(stopTimeService, never()).list(any(QueryWrapper.class));
     }
 
     @Test
@@ -124,64 +131,78 @@ class EventPipelineBoundaryUnitTest {
         LiveUpdateBroadcaster broadcaster = mock(LiveUpdateBroadcaster.class);
         Trip trip = new Trip();
         trip.setId(12L);
+        trip.setFeedVersionId(1L);
+        trip.setExternalTripId("TRIP-1");
         Stop stop = new Stop();
         stop.setId(13L);
-        when(tripService.getOne(any(), eq(false))).thenReturn(trip);
-        when(stopService.getOne(any(), eq(false))).thenReturn(stop);
-        when(stopTimeService.getOne(any(), eq(false))).thenReturn(new StopTime());
-        when(observationService.saveIfAbsent(any())).thenReturn(true);
+        stop.setFeedVersionId(1L);
+        stop.setExternalStopId("STOP-1");
+        StopTime stopTime = new StopTime();
+        stopTime.setTripId(12L);
+        stopTime.setStopId(13L);
+        stopTime.setStopSequence(2);
+        when(tripService.list(any(QueryWrapper.class))).thenReturn(List.of(trip));
+        when(stopService.list(any(QueryWrapper.class))).thenReturn(List.of(stop));
+        when(stopTimeService.list(any(QueryWrapper.class))).thenReturn(List.of(stopTime));
+        when(observationService.saveBatchIfAbsent(anyList())).thenReturn(1);
 
         new TripUpdateEventConsumer(
                 tripService, stopService, stopTimeService, observationService, broadcaster
-        ).consume(new TripUpdateEvent(
+        ).consume(List.of(new TripUpdateEvent(
                 UUID.randomUUID(), 1L, "TRIP-1", "STOP-1", 2, -15,
                 Instant.parse("2026-09-11T12:00:00Z")
-        ));
+        )));
 
-        ArgumentCaptor<TripStopDelayObservation> captor =
-                ArgumentCaptor.forClass(TripStopDelayObservation.class);
-        verify(observationService).saveIfAbsent(captor.capture());
-        assertThat(captor.getValue().getTripId()).isEqualTo(12L);
-        assertThat(captor.getValue().getStopId()).isEqualTo(13L);
+        ArgumentCaptor<List> captor = ArgumentCaptor.forClass(List.class);
+        verify(observationService).saveBatchIfAbsent(captor.capture());
+        @SuppressWarnings("unchecked")
+        List<TripStopDelayObservation> savedBatch = captor.getValue();
+        assertThat(savedBatch).hasSize(1);
+        assertThat(savedBatch.get(0).getTripId()).isEqualTo(12L);
+        assertThat(savedBatch.get(0).getStopId()).isEqualTo(13L);
         verify(broadcaster).signalChange("trip-delays");
     }
 
     @Test
-    void producersAwaitSuccessfulKafkaAcknowledgementAndTranslateFailures() {
-        @SuppressWarnings("unchecked")
-        KafkaTemplate<String, TripUpdateEvent> tripTemplate = mock(KafkaTemplate.class);
-        @SuppressWarnings("unchecked")
-        KafkaTemplate<String, VehiclePositionEvent> vehicleTemplate = mock(KafkaTemplate.class);
-        TripUpdateEvent tripEvent = resolvedTripEvent();
-        VehiclePositionEvent vehicleEvent = vehicleEvent();
-
-        when(tripTemplate.send(TripUpdateEventProducer.TOPIC, "1:TRIP-1", tripEvent))
-                .thenReturn(CompletableFuture.completedFuture(null));
-        when(vehicleTemplate.send(
-                VehiclePositionEventProducer.TOPIC, "VEHICLE-1", vehicleEvent
-        )).thenReturn(CompletableFuture.completedFuture(null));
-
-        new TripUpdateEventProducer(tripTemplate).publishBatch(List.of(tripEvent));
-        new VehiclePositionEventProducer(vehicleTemplate).publishBatch(List.of(vehicleEvent));
-
-        verify(tripTemplate).send(TripUpdateEventProducer.TOPIC, "1:TRIP-1", tripEvent);
-        verify(vehicleTemplate).send(
-                VehiclePositionEventProducer.TOPIC, "VEHICLE-1", vehicleEvent
+    void emptyAndInvalidLegacyBatchesDoNotWriteOrNotify() {
+        TripService tripService = mock(TripService.class);
+        StopService stopService = mock(StopService.class);
+        StopTimeService stopTimeService = mock(StopTimeService.class);
+        TripStopDelayObservationService observationService =
+                mock(TripStopDelayObservationService.class);
+        LiveUpdateBroadcaster broadcaster = mock(LiveUpdateBroadcaster.class);
+        TripUpdateEventConsumer consumer = new TripUpdateEventConsumer(
+                tripService, stopService, stopTimeService, observationService, broadcaster
         );
 
-        when(tripTemplate.send(TripUpdateEventProducer.TOPIC, "1:TRIP-1", tripEvent))
-                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("offline")));
-        assertThatThrownBy(() -> new TripUpdateEventProducer(tripTemplate)
-                .publishBatch(List.of(tripEvent))).isInstanceOf(BusinessException.class);
+        consumer.consume(List.of());
+        when(tripService.list(any(QueryWrapper.class))).thenReturn(List.of());
+        consumer.consume(List.of(new TripUpdateEvent(
+                UUID.randomUUID(), 1L, "MISSING", "STOP-1", 2, 10,
+                Instant.parse("2026-09-11T12:00:00Z")
+        )));
+
+        verify(observationService, never()).saveBatchIfAbsent(anyList());
+        verify(broadcaster, never()).signalChange("trip-delays");
     }
 
     @Test
-    void manualTripProducerCreatesAnEventAndEmptyBatchesDoNotCallKafka() {
-        @SuppressWarnings("unchecked")
-        KafkaTemplate<String, TripUpdateEvent> template = mock(KafkaTemplate.class);
-        when(template.send(eq(TripUpdateEventProducer.TOPIC), any(), any()))
-                .thenReturn(CompletableFuture.completedFuture(null));
-        TripUpdateEventProducer producer = new TripUpdateEventProducer(template);
+    void producersQueueEventsInTheDurableOutbox() {
+        KafkaOutboxService outboxService = mock(KafkaOutboxService.class);
+        TripUpdateEvent tripEvent = resolvedTripEvent();
+        VehiclePositionEvent vehicleEvent = vehicleEvent();
+
+        new TripUpdateEventProducer(outboxService).publishBatch(List.of(tripEvent));
+        new VehiclePositionEventProducer(outboxService).publishBatch(List.of(vehicleEvent));
+
+        verify(outboxService).enqueueTripUpdates(List.of(tripEvent));
+        verify(outboxService).enqueueVehiclePositions(List.of(vehicleEvent));
+    }
+
+    @Test
+    void manualTripProducerCreatesAnEventAndEmptyBatchesDoNotTouchTheOutbox() {
+        KafkaOutboxService outboxService = mock(KafkaOutboxService.class);
+        TripUpdateEventProducer producer = new TripUpdateEventProducer(outboxService);
 
         TripUpdateEvent event = producer.publish(new PublishTripUpdateRequest(
                 3L, "TRIP-3", "STOP-3", 2, 60
@@ -191,7 +212,7 @@ class EventPipelineBoundaryUnitTest {
         assertThat(event.externalTripId()).isEqualTo("TRIP-3");
         assertThat(event.eventId()).isNotNull();
         producer.publishBatch(List.of());
-        verify(template).send(eq(TripUpdateEventProducer.TOPIC), eq("3:TRIP-3"), eq(event));
+        verify(outboxService).enqueueTripUpdates(List.of(event));
     }
 
     private static TripUpdateEvent resolvedTripEvent() {

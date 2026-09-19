@@ -15,7 +15,14 @@ import java.io.IOException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Keeps connected dashboard clients and publishes small change notifications. */
+/**
+ * Keeps public {@code /ws/live} connections and publishes invalidations only.
+ *
+ * <p>Because this browser WebSocket endpoint is unauthenticated, it must send
+ * only {@link LiveUpdateMessage}: no live vehicle payloads, delays, user data,
+ * credentials, or other protected business data. Clients refresh data through
+ * the JWT-protected REST API after receiving an invalidation.</p>
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor

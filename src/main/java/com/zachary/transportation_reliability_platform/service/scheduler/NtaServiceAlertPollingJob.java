@@ -4,6 +4,7 @@ import com.zachary.transportation_reliability_platform.dto.response.NtaServiceAl
 import com.zachary.transportation_reliability_platform.service.impl.NtaServiceAlertIngestionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -20,6 +21,11 @@ public class NtaServiceAlertPollingJob {
     @Scheduled(
             initialDelayString = "${app.nta.alert-polling.initial-delay-ms}",
             fixedDelayString = "${app.nta.alert-polling.fixed-delay-ms}"
+    )
+    @SchedulerLock(
+            name = "nta-service-alerts-poll",
+            lockAtLeastFor = "PT5M",
+            lockAtMostFor = "PT15M"
     )
     public void pollAlerts() {
         try {

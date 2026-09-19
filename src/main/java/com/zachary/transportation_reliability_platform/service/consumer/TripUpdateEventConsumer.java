@@ -19,6 +19,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Listens for real-time Trip update events from Kafka
@@ -50,133 +56,166 @@ public class TripUpdateEventConsumer {
      */
     @KafkaListener(
             topics = TripUpdateEventProducer.TOPIC,
-            groupId = "trip-delay-observation-consumer"
+            groupId = "trip-delay-observation-consumer",
+            containerFactory = "tripUpdateBatchKafkaListenerContainerFactory"
     )
     @Transactional
-    public void consume(TripUpdateEvent event) {
-
-        // Full-network polling may produce thousands of events. Keep per-event
-        // diagnostics available without flooding normal application logs.
-        log.debug("Received trip update event: {}", event);
-
-        ResolvedIds resolvedIds = resolveInternalIds(event);
-
-        if (resolvedIds == null) {
-            // Invalid manual/legacy events are skipped so one bad message never
-            // blocks the Kafka partition.
+    public void consume(List<TripUpdateEvent> events) {
+        if (events == null || events.isEmpty()) {
             return;
         }
 
-        // Convert the Kafka event into a PostgreSQL entity.
-        TripStopDelayObservation observation =
-                new TripStopDelayObservation();
-
-        // Store the original event ID for idempotency and duplicate prevention.
-        observation.setEventId(event.eventId());
-
-        // Save verified internal database IDs for efficient future queries.
-        observation.setFeedVersionId(event.feedVersionId());
-        observation.setTripId(resolvedIds.tripId());
-        observation.setStopId(resolvedIds.stopId());
-
-        // Store the stop sequence and delay amount.
-        observation.setStopSequence(event.stopSequence());
-        observation.setDelaySeconds(event.delaySeconds());
-
-        // Convert Kafka Instant to OffsetDateTime in UTC.
-        observation.setObservedAt(
-                event.observedAt().atOffset(ZoneOffset.UTC)
-        );
-
-        // PostgreSQL handles duplicate event IDs in the same INSERT statement.
-        // This is faster and safer than a separate "does this exist?" query.
-        boolean inserted = delayObservationService.saveIfAbsent(observation);
-
-        if (!inserted) {
-            log.debug("Skipping duplicate trip update event: {}", event.eventId());
+        List<ResolvedEvent> resolvedEvents = resolveInternalIds(events);
+        if (resolvedEvents.isEmpty()) {
             return;
         }
 
-        liveUpdateBroadcaster.signalChange("trip-delays");
+        List<TripStopDelayObservation> observations = resolvedEvents.stream()
+                .map(this::toObservation)
+                .toList();
+        // PostgreSQL evaluates all event IDs in one INSERT ... ON CONFLICT
+        // statement. This keeps at-least-once Kafka delivery idempotent without
+        // a separate existence query for every record.
+        int insertedCount = delayObservationService.saveBatchIfAbsent(observations);
+
+        if (insertedCount > 0) {
+            // A batch changes one read model, so notify the frontend once rather
+            // than creating a WebSocket notification for every stop update.
+            liveUpdateBroadcaster.signalChange("trip-delays");
+        }
 
         log.debug(
-                "Saved delay observation. eventId={}, tripId={}, stopId={}, delaySeconds={}",
-                event.eventId(),
-                resolvedIds.tripId(),
-                resolvedIds.stopId(),
-                event.delaySeconds()
+                "Processed trip update batch. received={}, valid={}, inserted={}",
+                events.size(),
+                observations.size(),
+                insertedCount
         );
     }
 
     /**
      * Normal NTA events already contain IDs resolved by the ingestion service.
-     * The fallback preserves the manual testing endpoint and old Kafka records.
+     * The fallback preserves manual testing and old Kafka records, but resolves
+     * all of their trip, stop, and stop-time references with bounded queries
+     * rather than issuing three database lookups per event.
      */
-    private ResolvedIds resolveInternalIds(TripUpdateEvent event) {
-        if (event.resolvedTripId() != null
-                && event.resolvedStopId() != null) {
-            return new ResolvedIds(
-                    event.resolvedTripId(),
-                    event.resolvedStopId()
-            );
+    private List<ResolvedEvent> resolveInternalIds(List<TripUpdateEvent> events) {
+        List<ResolvedEvent> resolvedEvents = new ArrayList<>();
+        List<TripUpdateEvent> fallbackEvents = new ArrayList<>();
+
+        for (TripUpdateEvent event : events) {
+            if (event.resolvedTripId() != null && event.resolvedStopId() != null) {
+                resolvedEvents.add(new ResolvedEvent(
+                        event, new ResolvedIds(event.resolvedTripId(), event.resolvedStopId())
+                ));
+            } else {
+                fallbackEvents.add(event);
+            }
         }
 
-        Trip trip = tripService.getOne(
-                Wrappers.<Trip>lambdaQuery()
-                        .eq(Trip::getFeedVersionId, event.feedVersionId())
-                        .eq(Trip::getExternalTripId, event.externalTripId()),
-                false
-        );
-
-        if (trip == null) {
-            log.warn(
-                    "Skipping event {}: trip not found. feedVersionId={}, externalTripId={}",
-                    event.eventId(),
-                    event.feedVersionId(),
-                    event.externalTripId()
-            );
-            return null;
+        if (fallbackEvents.isEmpty()) {
+            return resolvedEvents;
         }
 
-        Stop stop = stopService.getOne(
-                Wrappers.<Stop>lambdaQuery()
-                        .eq(Stop::getFeedVersionId, event.feedVersionId())
-                        .eq(Stop::getExternalStopId, event.externalStopId()),
-                false
-        );
-
-        if (stop == null) {
-            log.warn(
-                    "Skipping event {}: stop not found. feedVersionId={}, externalStopId={}",
-                    event.eventId(),
-                    event.feedVersionId(),
-                    event.externalStopId()
-            );
-            return null;
+        Set<Long> feedVersionIds = new HashSet<>();
+        Set<String> externalTripIds = new HashSet<>();
+        Set<String> externalStopIds = new HashSet<>();
+        for (TripUpdateEvent event : fallbackEvents) {
+            feedVersionIds.add(event.feedVersionId());
+            externalTripIds.add(event.externalTripId());
+            externalStopIds.add(event.externalStopId());
         }
 
-        StopTime stopTime = stopTimeService.getOne(
-                Wrappers.<StopTime>lambdaQuery()
-                        .eq(StopTime::getTripId, trip.getId())
-                        .eq(StopTime::getStopId, stop.getId())
-                        .eq(StopTime::getStopSequence, event.stopSequence()),
-                false
-        );
-
-        if (stopTime == null) {
-            log.warn(
-                    "Skipping event {}: stop sequence does not match trip. tripId={}, stopId={}, sequence={}",
-                    event.eventId(),
-                    trip.getId(),
-                    stop.getId(),
-                    event.stopSequence()
-            );
-            return null;
+        Map<FeedExternalKey, Long> tripIds = new HashMap<>();
+        for (Trip trip : tripService.list(
+                Wrappers.<Trip>query()
+                        .in("feed_version_id", feedVersionIds)
+                        .in("external_trip_id", externalTripIds)
+        )) {
+            tripIds.put(new FeedExternalKey(trip.getFeedVersionId(), trip.getExternalTripId()),
+                    trip.getId());
+        }
+        Map<FeedExternalKey, Long> stopIds = new HashMap<>();
+        for (Stop stop : stopService.list(
+                Wrappers.<Stop>query()
+                        .in("feed_version_id", feedVersionIds)
+                        .in("external_stop_id", externalStopIds)
+        )) {
+            stopIds.put(new FeedExternalKey(stop.getFeedVersionId(), stop.getExternalStopId()),
+                    stop.getId());
         }
 
-        return new ResolvedIds(trip.getId(), stop.getId());
+        List<FallbackCandidate> candidates = new ArrayList<>();
+        for (TripUpdateEvent event : fallbackEvents) {
+            Long tripId = tripIds.get(new FeedExternalKey(
+                    event.feedVersionId(), event.externalTripId()
+            ));
+            if (tripId == null) {
+                log.warn("Skipping event {}: trip not found. feedVersionId={}, externalTripId={}",
+                        event.eventId(), event.feedVersionId(), event.externalTripId());
+                continue;
+            }
+            Long stopId = stopIds.get(new FeedExternalKey(
+                    event.feedVersionId(), event.externalStopId()
+            ));
+            if (stopId == null) {
+                log.warn("Skipping event {}: stop not found. feedVersionId={}, externalStopId={}",
+                        event.eventId(), event.feedVersionId(), event.externalStopId());
+                continue;
+            }
+            candidates.add(new FallbackCandidate(event, tripId, stopId));
+        }
+
+        if (candidates.isEmpty()) {
+            return resolvedEvents;
+        }
+
+        Set<Long> candidateTripIds = candidates.stream()
+                .map(FallbackCandidate::tripId)
+                .collect(java.util.stream.Collectors.toSet());
+        Set<TripStopSequenceKey> validStopTimes = stopTimeService.list(
+                Wrappers.<StopTime>query().in("trip_id", candidateTripIds)
+        ).stream().map(stopTime -> new TripStopSequenceKey(
+                stopTime.getTripId(), stopTime.getStopId(), stopTime.getStopSequence()
+        )).collect(java.util.stream.Collectors.toSet());
+
+        for (FallbackCandidate candidate : candidates) {
+            TripStopSequenceKey key = new TripStopSequenceKey(
+                    candidate.tripId(), candidate.stopId(), candidate.event().stopSequence()
+            );
+            if (!validStopTimes.contains(key)) {
+                log.warn("Skipping event {}: stop sequence does not match trip. tripId={}, stopId={}, sequence={}",
+                        candidate.event().eventId(), candidate.tripId(), candidate.stopId(),
+                        candidate.event().stopSequence());
+                continue;
+            }
+            resolvedEvents.add(new ResolvedEvent(
+                    candidate.event(), new ResolvedIds(candidate.tripId(), candidate.stopId())
+            ));
+        }
+
+        return resolvedEvents;
     }
 
-    private record ResolvedIds(Long tripId, Long stopId) {
+    private TripStopDelayObservation toObservation(ResolvedEvent resolvedEvent) {
+        TripUpdateEvent event = resolvedEvent.event();
+        TripStopDelayObservation observation = new TripStopDelayObservation();
+        observation.setEventId(event.eventId());
+        observation.setFeedVersionId(event.feedVersionId());
+        observation.setTripId(resolvedEvent.resolvedIds().tripId());
+        observation.setStopId(resolvedEvent.resolvedIds().stopId());
+        observation.setStopSequence(event.stopSequence());
+        observation.setDelaySeconds(event.delaySeconds());
+        observation.setObservedAt(event.observedAt().atOffset(ZoneOffset.UTC));
+        return observation;
     }
+
+    private record ResolvedIds(Long tripId, Long stopId) {}
+
+    private record ResolvedEvent(TripUpdateEvent event, ResolvedIds resolvedIds) {}
+
+    private record FallbackCandidate(TripUpdateEvent event, Long tripId, Long stopId) {}
+
+    private record FeedExternalKey(Long feedVersionId, String externalId) {}
+
+    private record TripStopSequenceKey(Long tripId, Long stopId, Integer stopSequence) {}
 }

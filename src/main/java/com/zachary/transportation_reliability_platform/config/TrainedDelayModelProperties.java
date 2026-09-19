@@ -10,15 +10,19 @@ public record TrainedDelayModelProperties(
         String inferenceScript,
         String artifactsDirectory,
         int minimumStopObservations,
+        double minimumStopCoverageDays,
+        int maxConcurrentInferences,
         int processTimeoutSeconds
 ) {
     public TrainedDelayModelProperties {
         pythonCommand = blankOrDefault(pythonCommand, "python");
         inferenceScript = blankOrDefault(inferenceScript, "ml/predict_delay.py");
         artifactsDirectory = blankOrDefault(artifactsDirectory, "ml/artifacts");
-        minimumStopObservations = minimumStopObservations < 1
-                ? 20
-                : minimumStopObservations;
+        // Keep the production contract strict even when an environment value
+        // is accidentally set below the approved data-quality gate.
+        minimumStopObservations = Math.max(minimumStopObservations, 1_501);
+        minimumStopCoverageDays = Math.max(minimumStopCoverageDays, 7.0);
+        maxConcurrentInferences = Math.max(1, maxConcurrentInferences);
         processTimeoutSeconds = processTimeoutSeconds < 1
                 ? 10
                 : processTimeoutSeconds;

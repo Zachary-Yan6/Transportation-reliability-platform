@@ -7,6 +7,7 @@ import com.zachary.transportation_reliability_platform.service.RouteService;
 import com.zachary.transportation_reliability_platform.service.ServiceAlertService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -48,6 +49,11 @@ public class RouteAlertMonitoringJob {
     @Scheduled(
             initialDelayString = "${app.nta.alert-monitoring.initial-delay-ms}",
             fixedDelayString = "${app.nta.alert-monitoring.fixed-delay-ms}"
+    )
+    @SchedulerLock(
+            name = "route-alert-monitoring",
+            lockAtLeastFor = "PT5M",
+            lockAtMostFor = "PT30M"
     )
     public void evaluateTargetRoute() {
         Long activeFeedVersionId = activeFeedVersionId();

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zachary.transportation_reliability_platform.config.TrainedDelayModelProperties;
 import com.zachary.transportation_reliability_platform.dto.TrainedDelayModelPrediction;
+import com.zachary.transportation_reliability_platform.security.ModelInferenceConcurrencyLimiter;
 import com.zachary.transportation_reliability_platform.service.TrainedDelayModelInput;
 import com.zachary.transportation_reliability_platform.service.TrainedDelayModelRunner;
 import com.zachary.transportation_reliability_platform.service.TrainedDelayModelService;
@@ -36,6 +37,7 @@ public class PythonTrainedDelayModelService implements TrainedDelayModelService 
     private final TrainedDelayModelProperties properties;
     private final ObjectMapper objectMapper;
     private final TrainedDelayModelRunner trainedDelayModelRunner;
+    private final ModelInferenceConcurrencyLimiter modelInferenceConcurrencyLimiter;
 
     @Override
     public Optional<TrainedDelayModelPrediction> predictIfEligible(
@@ -70,6 +72,14 @@ public class PythonTrainedDelayModelService implements TrainedDelayModelService 
             return Optional.empty();
         }
 
+        // Rate limiting protects the shared HTTP budget. This local bulkhead
+        // separately prevents concurrent Python processes from exhausting one
+        // application instance. No permit means the caller uses its fallback.
+        if (!modelInferenceConcurrencyLimiter.tryAcquire()) {
+            log.debug("Python inference bulkhead is full; using fallback for route {}", routeId);
+            return Optional.empty();
+        }
+
         try {
             return trainedDelayModelRunner.predict(modelPath, input)
                     .map(prediction -> toPrediction(prediction, metadata.get()));
@@ -77,6 +87,8 @@ public class PythonTrainedDelayModelService implements TrainedDelayModelService 
             // Prediction must never make the customer-facing delay endpoint fail.
             log.warn("Trained delay model failed for route {}; using fallback", routeId, exception);
             return Optional.empty();
+        } finally {
+            modelInferenceConcurrencyLimiter.release();
         }
     }
 
@@ -105,13 +117,29 @@ public class PythonTrainedDelayModelService implements TrainedDelayModelService 
                     .path("trainedStopSampleCounts")
                     .path(String.valueOf(stopId))
                     .asLong(0);
+            double reportMinimumCoverageDays = deploymentEligibility
+                    .path("minimumStopCoverageDaysExclusive")
+                    .asDouble(Double.POSITIVE_INFINITY);
+            double requiredCoverageDays = Math.max(
+                    properties.minimumStopCoverageDays(),
+                    reportMinimumCoverageDays
+            );
+            double stopCoverageDays = deploymentEligibility
+                    .path("trainedStopCoverageDays")
+                    .path(String.valueOf(stopId))
+                    .asDouble(-1);
 
-            if (stopSamples < requiredSamples) {
+            if (stopSamples < requiredSamples
+                    || stopCoverageDays <= requiredCoverageDays) {
                 log.debug(
-                        "Route model has only {} samples for stop {}; {} are required",
-                        stopSamples,
+                        "Route model is ineligible for stop {}: samples={}, "
+                                + "coverageDays={}, requiredSamples={}, "
+                                + "requiredCoverageDaysExclusive={}",
                         stopId,
-                        requiredSamples
+                        stopSamples,
+                        stopCoverageDays,
+                        requiredSamples,
+                        requiredCoverageDays
                 );
                 return Optional.empty();
             }

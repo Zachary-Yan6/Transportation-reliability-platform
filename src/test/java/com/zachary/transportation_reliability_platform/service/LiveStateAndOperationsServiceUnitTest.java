@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zachary.transportation_reliability_platform.dto.LiveTripStopDelayResponse;
 import com.zachary.transportation_reliability_platform.dto.LiveVehiclePositionResponse;
+import com.zachary.transportation_reliability_platform.common.exception.LiveDataUnavailableException;
 import com.zachary.transportation_reliability_platform.dto.RouteAnomalyResponse;
 import com.zachary.transportation_reliability_platform.dto.RouteReliabilityResponse;
 import com.zachary.transportation_reliability_platform.dto.TripOperationStatusResponse;
@@ -22,6 +23,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -259,6 +261,28 @@ class LiveStateAndOperationsServiceUnitTest {
                 any(),
                 any()
         );
+    }
+
+    @Test
+    void redisOutagesBecomeLiveDataUnavailableWithoutChangingSerializationHandling() {
+        when(stringRedisTemplate.opsForHash()).thenThrow(
+                new RedisConnectionFailureException("offline")
+        );
+        RedisLiveTripStateService tripService = new RedisLiveTripStateService(
+                stringRedisTemplate,
+                objectMapper
+        );
+        RedisLiveVehiclePositionService vehicleService = new RedisLiveVehiclePositionService(
+                stringRedisTemplate,
+                objectMapper
+        );
+
+        assertThatThrownBy(() -> tripService.findByTrip(1L, "TRIP-1"))
+                .isInstanceOf(LiveDataUnavailableException.class)
+                .hasMessageContaining("trip-delay");
+        assertThatThrownBy(vehicleService::findAll)
+                .isInstanceOf(LiveDataUnavailableException.class)
+                .hasMessageContaining("vehicle-position");
     }
 
     private TripOperationServiceImpl tripOperationService() {

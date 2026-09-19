@@ -1,6 +1,7 @@
 package com.zachary.transportation_reliability_platform.service;
 
 import com.zachary.transportation_reliability_platform.common.exception.BusinessException;
+import com.zachary.transportation_reliability_platform.common.exception.LiveDataUnavailableException;
 import com.zachary.transportation_reliability_platform.dto.DelayPredictionResponse;
 import com.zachary.transportation_reliability_platform.dto.LiveTripStopDelayResponse;
 import com.zachary.transportation_reliability_platform.dto.TrainedDelayModelPrediction;
@@ -122,6 +123,29 @@ class TripStopDelayEstimateServiceUnitTest {
         assertThat(result.state()).isEqualTo("PREDICTED");
         assertThat(result.estimatedDelaySeconds()).isEqualByComparingTo("180");
         assertThat(result.observedAt()).isNull();
+    }
+
+    @Test
+    void redisOutageUsesTheHistoricalPredictionFallback() {
+        TripStopDelayEstimateServiceImpl service = service();
+        Trip trip = trip();
+        Stop stop = stop(1L, "STOP-1");
+        StopTime scheduled = stopTime(1L, 1);
+        OffsetDateTime future = OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(5);
+        when(tripService.getRequiredById(10L)).thenReturn(trip);
+        when(stopService.getRequiredById(1L)).thenReturn(stop);
+        when(stopTimeService.findByTripId(10L)).thenReturn(List.of(scheduled));
+        when(liveTripStateService.findByTrip(2L, "TRIP-10")).thenThrow(
+                new LiveDataUnavailableException("Redis offline", new IllegalStateException("offline"))
+        );
+        when(delayPredictionService.predictDelay(5L, 1L, future))
+                .thenReturn(prediction(5L, 1L, future, BigDecimal.valueOf(75)));
+
+        TripStopDelayEstimateResponse result = service.estimateDelay(10L, 1L, 1, future);
+
+        assertThat(result.state()).isEqualTo("PREDICTED");
+        assertThat(result.estimatedDelaySeconds()).isEqualByComparingTo("75");
+        verify(trainedDelayModelService).predictIfEligible(eq(5L), any());
     }
 
     @Test

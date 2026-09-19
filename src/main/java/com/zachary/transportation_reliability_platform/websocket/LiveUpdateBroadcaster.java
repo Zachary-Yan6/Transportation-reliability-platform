@@ -20,6 +20,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * it cancels the previous pending notification of the same type and schedules a new one.
  * This coalesces bursty updates into a single browser notification,
  * reducing unnecessary network traffic and frontend refreshes.
+ *
+ * <p>The broadcaster emits only the public {@link LiveUpdateMessage}
+ * invalidation schema. Do not add protected business data to these messages:
+ * browser clients obtain it through JWT-protected REST endpoints.</p>
  */
 @Service
 public class LiveUpdateBroadcaster {
@@ -61,6 +65,8 @@ public class LiveUpdateBroadcaster {
     }
 
     public void signalChange(String type) {
+        // "type" identifies an invalidated resource category only. It is not
+        // a container for a live data payload because /ws/live is public.
         long version = notificationSequence.incrementAndGet();
 
         synchronized (pendingUpdatesMonitor) {
