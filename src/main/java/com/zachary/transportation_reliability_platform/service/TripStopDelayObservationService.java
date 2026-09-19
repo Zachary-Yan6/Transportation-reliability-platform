@@ -21,6 +21,14 @@ public interface TripStopDelayObservationService
      */
     boolean saveIfAbsent(TripStopDelayObservation observation);
 
+    /**
+     * Persists a Kafka poll efficiently in one idempotent SQL statement.
+     *
+     * @return the number of newly inserted observations; duplicate event IDs
+     * are intentionally excluded from this count
+     */
+    int saveBatchIfAbsent(List<TripStopDelayObservation> observations);
+
     List<TripDelayObservationResponse> findRecentByTripId(
             Long tripId,
             int limit

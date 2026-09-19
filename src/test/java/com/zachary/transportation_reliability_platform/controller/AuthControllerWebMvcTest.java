@@ -3,6 +3,7 @@ package com.zachary.transportation_reliability_platform.controller;
 import com.zachary.transportation_reliability_platform.dto.auth.AuthResponse;
 import com.zachary.transportation_reliability_platform.dto.auth.CurrentUserResponse;
 import com.zachary.transportation_reliability_platform.service.AuthService;
+import com.zachary.transportation_reliability_platform.security.ApiRateLimitFilter;
 import com.zachary.transportation_reliability_platform.security.JwtAuthenticationFilter;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,7 +31,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         controllers = AuthController.class,
         excludeFilters = @ComponentScan.Filter(
                 type = FilterType.ASSIGNABLE_TYPE,
-                classes = JwtAuthenticationFilter.class
+                classes = {JwtAuthenticationFilter.class, ApiRateLimitFilter.class}
         )
 )
 @AutoConfigureMockMvc(addFilters = false)

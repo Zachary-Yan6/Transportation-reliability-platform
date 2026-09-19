@@ -174,7 +174,7 @@ class CoreServiceUnitTest {
     }
 
     @Test
-    void delayObservationServiceValidatesLimitsAndUsesIdempotentInsert() {
+    void delayObservationServiceValidatesLimitsAndUsesIdempotentInserts() {
         TripStopDelayObservationMapper mapper = mock(TripStopDelayObservationMapper.class);
         TripStopDelayObservationServiceImpl service = withBaseMapper(
                 new TripStopDelayObservationServiceImpl(), mapper
@@ -183,10 +183,14 @@ class CoreServiceUnitTest {
         TripStopDelayObservation observation = new TripStopDelayObservation();
         observation.setEventId(eventId);
         when(mapper.insertIfAbsent(observation)).thenReturn(1);
+        when(mapper.insertBatchIfAbsent(List.of(observation))).thenReturn(1);
         when(mapper.findRecentByTripId(1L, 10)).thenReturn(List.of());
         when(mapper.findRecentByStopId(2L, 10)).thenReturn(List.of());
 
         assertTrue(service.saveIfAbsent(observation));
+        assertEquals(1, service.saveBatchIfAbsent(List.of(observation)));
+        assertEquals(0, service.saveBatchIfAbsent(List.of()));
+        assertEquals(0, service.saveBatchIfAbsent(null));
         assertTrue(service.findRecentByTripId(1L, 10).isEmpty());
         assertTrue(service.findRecentByStopId(2L, 10).isEmpty());
         assertThrows(BusinessException.class, () -> service.findRecentByTripId(1L, 0));
@@ -194,6 +198,7 @@ class CoreServiceUnitTest {
         assertThrows(BusinessException.class, () -> service.findRecentByStopId(2L, 0));
         assertThrows(BusinessException.class, () -> service.findRecentByStopId(2L, 101));
         verify(mapper).insertIfAbsent(observation);
+        verify(mapper).insertBatchIfAbsent(List.of(observation));
     }
 
     @Test

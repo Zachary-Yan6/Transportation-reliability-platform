@@ -90,8 +90,12 @@ public class NtaRealtimeIngestionService {
         try {
             JsonNode root = objectMapper.readTree(rawFeed);
             JsonNode entities = root.path("entity");
+            // time you fetch this data
             Instant feedTimestamp = getFeedTimestamp(root);
 
+            /**
+             * return updated information(delay of some stops) about one route or all routes
+             */
             ExtractionResult extractionResult = extractCandidates(
                     entities,
                     targetExternalRouteId
@@ -252,17 +256,17 @@ public class NtaRealtimeIngestionService {
 
         List<String> stopIds = List.copyOf(externalStopIds);
         List<String> tripIds = List.copyOf(externalTripIds);
-        Map<ExternalStopTimeKey, RealtimeStopTimeMatchRow> matches =
-                new HashMap<>();
+        Map<ExternalStopTimeKey, RealtimeStopTimeMatchRow> matches = new HashMap<>();
 
-        for (int fromIndex = 0;
-             fromIndex < tripIds.size();
-             fromIndex += MATCH_TRIP_ID_BATCH_SIZE) {
+        for (int fromIndex = 0; fromIndex < tripIds.size(); fromIndex += MATCH_TRIP_ID_BATCH_SIZE) {
             int toIndex = Math.min(
                     fromIndex + MATCH_TRIP_ID_BATCH_SIZE,
                     tripIds.size()
             );
 
+            /**
+             * return sequence of one stop in various trips
+             */
             List<RealtimeStopTimeMatchRow> rows =
                     stopTimeMapper.findRealtimeMatches(
                             feedVersionId,
@@ -290,9 +294,9 @@ public class NtaRealtimeIngestionService {
             List<TripUpdateEvent> events,
             int publicationBatchSize
     ) {
-        for (int fromIndex = 0;
-             fromIndex < events.size();
-             fromIndex += publicationBatchSize) {
+//        System.out.println("111111111111111111111111111111111111111111111111");
+//        System.out.println(events.size()); 14087
+        for (int fromIndex = 0; fromIndex < events.size(); fromIndex += publicationBatchSize) {
             int toIndex = Math.min(
                     fromIndex + publicationBatchSize,
                     events.size()

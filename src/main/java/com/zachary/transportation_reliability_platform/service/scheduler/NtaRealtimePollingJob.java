@@ -6,6 +6,7 @@ import com.zachary.transportation_reliability_platform.service.RealtimeIngestion
 import com.zachary.transportation_reliability_platform.service.impl.NtaRealtimeIngestionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -45,6 +46,13 @@ public class NtaRealtimePollingJob {
     @Scheduled(
             initialDelayString = "${app.nta.realtime-polling.initial-delay-ms}",
             fixedDelayString = "${app.nta.realtime-polling.fixed-delay-ms}"
+    )
+    // The same lock name is shared by every instance, so only one instance
+    // polls the NTA Trip Updates endpoint during each five-minute window.
+    @SchedulerLock(
+            name = "nta-realtime-trip-updates-poll",
+            lockAtLeastFor = "PT5M",
+            lockAtMostFor = "PT15M"
     )
     public void pollNtaRealtimeFeed() {
         Instant startedAt = Instant.now();

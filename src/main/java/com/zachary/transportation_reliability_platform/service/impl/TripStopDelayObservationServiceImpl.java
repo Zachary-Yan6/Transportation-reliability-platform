@@ -10,6 +10,7 @@ import com.zachary.transportation_reliability_platform.entity.TripStopDelayObser
 import com.zachary.transportation_reliability_platform.mapper.TripStopDelayObservationMapper;
 import com.zachary.transportation_reliability_platform.service.TripStopDelayObservationService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.UUID;
@@ -33,6 +34,15 @@ public class TripStopDelayObservationServiceImpl
     @Override
     public boolean saveIfAbsent(TripStopDelayObservation observation) {
         return baseMapper.insertIfAbsent(observation) == 1;
+    }
+
+    @Override
+    @Transactional
+    public int saveBatchIfAbsent(List<TripStopDelayObservation> observations) {
+        if (observations == null || observations.isEmpty()) {
+            return 0;
+        }
+        return baseMapper.insertBatchIfAbsent(observations);
     }
 
     @Override

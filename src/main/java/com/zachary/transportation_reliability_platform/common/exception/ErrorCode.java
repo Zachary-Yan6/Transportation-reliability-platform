@@ -56,6 +56,18 @@ public enum ErrorCode {
             HttpStatus.CONFLICT
     ),
 
+    LIVE_DATA_UNAVAILABLE(
+            "LIVE_DATA_UNAVAILABLE",
+            "Live data is temporarily unavailable",
+            HttpStatus.SERVICE_UNAVAILABLE
+    ),
+
+    EVENT_BACKPRESSURE(
+            "EVENT_BACKPRESSURE",
+            "Real-time event processing is temporarily at capacity",
+            HttpStatus.SERVICE_UNAVAILABLE
+    ),
+
     INTERNAL_ERROR(
             "INTERNAL_ERROR",
             "An unexpected server error occurred",

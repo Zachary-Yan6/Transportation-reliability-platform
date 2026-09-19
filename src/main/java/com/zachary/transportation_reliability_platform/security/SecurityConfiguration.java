@@ -5,6 +5,7 @@ import com.zachary.transportation_reliability_platform.common.response.ApiErrorR
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -38,6 +39,7 @@ import java.util.Map;
 public class SecurityConfiguration {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final ApiRateLimitFilter apiRateLimitFilter;
     private final AccountUserDetailsService accountUserDetailsService;
     private final SecurityProperties properties;
     private final ObjectMapper objectMapper;
@@ -99,6 +101,10 @@ public class SecurityConfiguration {
                                 "/api/v1/auth/register").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/info", "/ws/**")
                         .permitAll()
+                        // Operational counters can reveal outage and traffic
+                        // patterns, so only administrators may inspect them.
+                        .requestMatchers("/actuator/metrics", "/actuator/metrics/**")
+                        .hasRole("ADMIN")
 
                         // Development, ingestion, import, and AI-model
                         // endpoints can affect data or expose provider details.
@@ -118,8 +124,29 @@ public class SecurityConfiguration {
                 .addFilterBefore(
                         jwtAuthenticationFilter,
                         UsernamePasswordAuthenticationFilter.class
+                )
+                // The limiter runs after JWT restoration so each account gets
+                // its own budget instead of sharing an address-wide quota.
+                .addFilterAfter(
+                        apiRateLimitFilter,
+                        JwtAuthenticationFilter.class
                 );
         return http.build();
+    }
+
+    /**
+     * The rate-limit filter belongs to Spring Security's ordered chain, not
+     * the servlet container's independent filter chain. Registering it twice
+     * would accidentally spend two tokens per HTTP request.
+     */
+    @Bean
+    public FilterRegistrationBean<ApiRateLimitFilter> apiRateLimitFilterRegistration(
+            ApiRateLimitFilter filter
+    ) {
+        FilterRegistrationBean<ApiRateLimitFilter> registration =
+                new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
     }
 
     @Bean
@@ -128,7 +155,7 @@ public class SecurityConfiguration {
         configuration.setAllowedOrigins(List.of(properties.frontendOrigin()));
         configuration.setAllowedMethods(List.of("GET", "POST", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
-        configuration.setExposedHeaders(List.of("Content-Disposition"));
+        configuration.setExposedHeaders(List.of("Content-Disposition", "Retry-After"));
         configuration.setAllowCredentials(false);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

@@ -26,6 +26,17 @@ spring:
 
       # TripUpdateEvent objects are converted to JSON automatically.
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      # The client retries transient broker errors before the durable outbox
+      # schedules a later attempt. acks=all plus idempotence prevents duplicate
+      # appends during client-level retries.
+      properties:
+        acks: all
+        enable.idempotence: true
+        retries: 3
+        retry.backoff.ms: 500
+        request.timeout.ms: 10000
+        delivery.timeout.ms: 30000
+        max.in.flight.requests.per.connection: 5
 
     consumer:
       group-id: trip-delay-observation-consumer
@@ -69,7 +80,9 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # Outbox failure counters are exposed here so operations can alert
+        # before a broker outage becomes visible to passenger-facing APIs.
+        include: health,info,metrics
   endpoint:
     health:
       show-details: always
@@ -82,6 +95,16 @@ logging:
     org.apache.ibatis: WARN
     org.springframework.jdbc: WARN
 app:
+  kafka-outbox:
+    # Kafka outages retain events in PostgreSQL. The cap provides backpressure
+    # so a long broker outage cannot consume unbounded database storage.
+    max-pending-events: ${KAFKA_OUTBOX_MAX_PENDING_EVENTS:100000}
+    dispatch-batch-size: ${KAFKA_OUTBOX_DISPATCH_BATCH_SIZE:250}
+    dispatch-interval-ms: ${KAFKA_OUTBOX_DISPATCH_INTERVAL_MS:5000}
+    max-attempts: ${KAFKA_OUTBOX_MAX_ATTEMPTS:6}
+    retry-base-seconds: ${KAFKA_OUTBOX_RETRY_BASE_SECONDS:5}
+    retry-max-seconds: ${KAFKA_OUTBOX_RETRY_MAX_SECONDS:300}
+    send-timeout-seconds: ${KAFKA_OUTBOX_SEND_TIMEOUT_SECONDS:10}
   security:
     # Replace the development fallback with a new Base64-encoded, 32-byte-or-
     # longer secret before deployment. Changing it invalidates existing tokens.
@@ -101,10 +124,33 @@ app:
       python-command: ${AI_PYTHON_COMMAND:python}
       inference-script: ${AI_MODEL_INFERENCE_SCRIPT:ml/predict_delay.py}
       artifacts-directory: ${AI_MODEL_ARTIFACTS_DIRECTORY:ml/artifacts}
-      # A route model may only predict a stop that appears often enough in its
-      # own training split. Sparse stops continue through the baseline fallback.
-      minimum-stop-observations: ${AI_MODEL_MINIMUM_STOP_OBSERVATIONS:20}
+      # A route model may only predict a stop with more than 1,500 samples and
+      # more than seven days of history in its own training split. Sparse or
+      # short-lived stops continue through the baseline fallback.
+      minimum-stop-observations: ${AI_MODEL_MINIMUM_STOP_OBSERVATIONS:1501}
+      minimum-stop-coverage-days: ${AI_MODEL_MINIMUM_STOP_COVERAGE_DAYS:7}
+      # A Python process is started for each eligible prediction. This local
+      # bulkhead limits concurrent processes; rate limiting protects the
+      # shared HTTP request budget separately.
+      max-concurrent-inferences: ${AI_MODEL_MAX_CONCURRENT_INFERENCES:2}
       process-timeout-seconds: ${AI_MODEL_PROCESS_TIMEOUT_SECONDS:10}
+
+  rate-limit:
+    # Redis token buckets are shared across application instances. Set false
+    # only for focused local debugging; production should keep this enabled.
+    enabled: ${API_RATE_LIMIT_ENABLED:true}
+    normal:
+      capacity: ${API_RATE_LIMIT_NORMAL_CAPACITY:120}
+      window-seconds: ${API_RATE_LIMIT_NORMAL_WINDOW_SECONDS:60}
+    inference:
+      capacity: ${API_RATE_LIMIT_INFERENCE_CAPACITY:20}
+      window-seconds: ${API_RATE_LIMIT_INFERENCE_WINDOW_SECONDS:60}
+    # Batch predictions fan out to multiple stop estimates, so one request
+    # consumes five inference tokens by default.
+    inference-batch-cost: ${API_RATE_LIMIT_INFERENCE_BATCH_COST:5}
+    admin:
+      capacity: ${API_RATE_LIMIT_ADMIN_CAPACITY:10}
+      window-seconds: ${API_RATE_LIMIT_ADMIN_WINDOW_SECONDS:60}
 
   live-state:
     # A live NTA update is no longer presented as current after fifteen
@@ -156,6 +202,11 @@ app:
       # Records are sent to Kafka concurrently in bounded groups. This is not
       # a data limit: every batch is sent before the polling run succeeds.
       publication-batch-size: 250
+
+      # One historical-delay Kafka transaction and SQL INSERT handles at most
+      # this many records. Keep it aligned with publication-batch-size unless
+      # database measurements justify a different value.
+      consumer-batch-size: ${NTA_REALTIME_CONSUMER_BATCH_SIZE:250}
 
       initial-delay-ms: 30000
       fixed-delay-ms: 300000

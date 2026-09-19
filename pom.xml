@@ -36,12 +36,26 @@
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
         <jacoco.version>0.8.13</jacoco.version>
         <spotbugs-maven-plugin.version>4.9.3.0</spotbugs-maven-plugin.version>
+        <shedlock.version>7.10.1</shedlock.version>
     </properties>
 
     <dependencies>
         <dependency>
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <!-- Coordinates @Scheduled work across application instances. PostgreSQL
+             is used as the shared lock store because it already backs this app. -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-jdbc-template</artifactId>
+            <version>${shedlock.version}</version>
         </dependency>
 
         <!-- Stores the latest short-lived trip state independently from the

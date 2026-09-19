@@ -25,9 +25,9 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 
-# These are deliberately aligned with the Spring Boot training-data-status
-# endpoint. They prevent an accidental claim that a short experiment is a
-# reliable production model.
+# Route-level checks prevent an accidental claim that a short experiment is a
+# reliable production model. Prediction eligibility is stricter and is checked
+# per stop from the training split below.
 MINIMUM_OBSERVATIONS = 1_000
 MINIMUM_COVERAGE_HOURS = 72
 MINIMUM_ACTIVE_HOURS = 48
@@ -35,9 +35,13 @@ MODEL_VERSION = "SKLEARN_RANDOM_FOREST_V1"
 BASELINE_VERSION = "FROZEN_HISTORICAL_AVERAGE_BASELINE_V1"
 MINIMUM_TIME_MATCHED_SAMPLES = 5
 MINIMUM_STOP_HISTORY_SAMPLES = 3
-# A route model can learn general patterns, but it must not be selected for a
-# stop that was barely represented in its own training split.
-MINIMUM_STOP_OBSERVATIONS = 20
+# A route model must never be used for a stop unless that stop has more than
+# 1,500 labelled observations and a training history spanning more than seven
+# days. These gates deliberately inspect only training rows: using held-out
+# test data here would leak future information into deployment eligibility.
+MINIMUM_STOP_OBSERVATIONS = 1_501
+MINIMUM_STOP_COVERAGE_DAYS_EXCLUSIVE = 7.0
+LOCAL_TIMEZONE = "Europe/Dublin"
 # A tiny MAE difference can be random variation in a small test set. A model
 # must improve by a meaningful margin before it may become a candidate.
 MINIMUM_MAE_IMPROVEMENT_SECONDS = 30
@@ -84,7 +88,11 @@ def parse_arguments() -> argparse.Namespace:
         "--test-fraction",
         type=float,
         default=0.20,
-        help="Latest fraction of records reserved for testing (default: 0.20).",
+        help=(
+            "Approximate newest fraction reserved for testing (default: 0.20). "
+            "The actual split is moved to the next Dublin-local Saturday "
+            "boundary so the hold-out period is strictly later than training."
+        ),
     )
     parser.add_argument(
         "--baseline-mae",
@@ -210,10 +218,16 @@ def build_pipeline() -> Pipeline:
     )
 
 
-def chronological_split(
+def calendar_week_time_split(
     frame: pd.DataFrame, test_fraction: float
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Reserve the newest records as the test set, with no random shuffle."""
+    """Split at a Dublin-local Saturday boundary without temporal leakage.
+
+    The split target is based on ``test_fraction``, but the actual boundary is
+    the Saturday at 00:00 Dublin time that starts the target week's weekend.
+    This produces the natural Mon-Fri training / weekend-and-later test pattern
+    while ensuring every training observation is older than every test row.
+    """
     if not 0 < test_fraction < 0.5:
         raise ValueError("--test-fraction must be greater than 0 and below 0.5")
 
@@ -222,7 +236,62 @@ def chronological_split(
     if train_count < 10:
         raise ValueError("At least 11 valid observations are needed to train.")
 
-    return frame.iloc[:train_count], frame.iloc[train_count:]
+    # observed_at is UTC, but the business week and model weekday/hour
+    # features are Dublin-local. Choose a calendar boundary in that same zone.
+    target_local_day = frame.iloc[train_count]["observed_at"].tz_convert(
+        LOCAL_TIMEZONE
+    ).normalize()
+    target_weekday = target_local_day.weekday()
+    # Mon-Fri: begin the hold-out at the coming weekend. Saturday/Sunday:
+    # begin it at the weekend already containing the target, rather than
+    # incorrectly skipping forward almost a whole week and leaving no test set.
+    days_to_weekend_start = 5 - target_weekday if target_weekday <= 5 else -1
+    test_start_local = target_local_day + pd.Timedelta(days=days_to_weekend_start)
+    test_start_utc = test_start_local.tz_convert("UTC")
+
+    train_frame = frame.loc[frame["observed_at"] < test_start_utc].copy()
+    test_frame = frame.loc[frame["observed_at"] >= test_start_utc].copy()
+
+    if len(train_frame) < 10:
+        raise ValueError(
+            "The Dublin-local calendar split leaves fewer than 10 training rows."
+        )
+    if test_frame.empty:
+        raise ValueError(
+            "The dataset needs observations on or after the next Dublin-local "
+            "Saturday boundary to create a strictly future test set."
+        )
+    if train_frame["observed_at"].max() >= test_frame["observed_at"].min():
+        raise AssertionError("Calendar time split must not overlap train and test.")
+
+    return train_frame.reset_index(drop=True), test_frame.reset_index(drop=True)
+
+
+def get_stop_training_quality(train_frame: pd.DataFrame) -> dict[str, dict[str, object]]:
+    """Describe per-stop eligibility using training data only.
+
+    The report contains this metadata so Java can reject a stale or sparse
+    stop at prediction time without inspecting the held-out test period.
+    """
+    qualities: dict[str, dict[str, object]] = {}
+    for stop_id, stop_frame in train_frame.groupby("stop_id", sort=False):
+        earliest = stop_frame["observed_at"].min()
+        latest = stop_frame["observed_at"].max()
+        coverage_days = (latest - earliest).total_seconds() / 86_400
+        observation_count = int(len(stop_frame))
+        eligible = (
+            observation_count >= MINIMUM_STOP_OBSERVATIONS
+            and coverage_days > MINIMUM_STOP_COVERAGE_DAYS_EXCLUSIVE
+        )
+        qualities[str(stop_id)] = {
+            "observationCount": observation_count,
+            "earliestObservedAt": earliest.isoformat(),
+            "latestObservedAt": latest.isoformat(),
+            "coverageDays": round(coverage_days, 4),
+            "eligible": eligible,
+        }
+
+    return qualities
 
 
 def calculate_metrics(
@@ -305,6 +374,7 @@ def determine_promotion_decision(
     readiness_passed: bool,
     model_metrics: dict[str, float],
     baseline_metrics: dict[str, float],
+    stop_training_quality: dict[str, dict[str, object]],
 ) -> dict[str, object]:
     """Decide whether a model is safe to consider for later API deployment.
 
@@ -322,6 +392,13 @@ def determine_promotion_decision(
     if not readiness_passed:
         reasons.append(
             "Training-data readiness thresholds have not been reached."
+        )
+    if not any(
+        quality["eligible"] for quality in stop_training_quality.values()
+    ):
+        reasons.append(
+            "No stop has more than 1,500 training observations spanning more "
+            "than seven days."
         )
     if mae_improvement < MINIMUM_MAE_IMPROVEMENT_SECONDS:
         reasons.append(
@@ -356,6 +433,7 @@ def build_report(
     baseline_source_counts: dict[str, int],
     earlier_api_baseline_mae: float | None,
     readiness_passed: bool,
+    stop_training_quality: dict[str, dict[str, object]],
 ) -> dict[str, object]:
     """Create a report with a like-for-like model/baseline comparison."""
     model_metrics = calculate_metrics(actual, model_predicted)
@@ -366,6 +444,7 @@ def build_report(
         readiness_passed,
         model_metrics,
         baseline_metrics,
+        stop_training_quality,
     )
 
     report: dict[str, object] = {
@@ -374,7 +453,8 @@ def build_report(
         "status": "READY_FOR_COMPARISON" if readiness_passed else "EXPERIMENTAL",
         "dataQuality": quality,
         "split": {
-            "strategy": "chronological",
+            "strategy": "calendar-week-time-based",
+            "timezone": LOCAL_TIMEZONE,
             "trainingRowCount": int(len(train_frame)),
             "testRowCount": int(len(test_frame)),
             "trainingEndsAt": train_frame["observed_at"].iloc[-1].isoformat(),
@@ -404,13 +484,22 @@ def build_report(
             # Counts come from the training split only, never from the held-out
             # test period used to decide whether promotion is safe.
             "minimumStopObservations": MINIMUM_STOP_OBSERVATIONS,
+            "minimumStopCoverageDaysExclusive": (
+                MINIMUM_STOP_COVERAGE_DAYS_EXCLUSIVE
+            ),
             "trainedStopSampleCounts": {
-                str(stop_id): int(count)
-                for stop_id, count in train_frame.groupby("stop_id").size().items()
+                stop_id: quality["observationCount"]
+                for stop_id, quality in stop_training_quality.items()
             },
+            "trainedStopCoverageDays": {
+                stop_id: quality["coverageDays"]
+                for stop_id, quality in stop_training_quality.items()
+            },
+            "trainedStopDataQuality": stop_training_quality,
             "note": (
-                "A promoted route model is used only for stops meeting the "
-                "minimum training-observation threshold."
+                "A promoted route model is used only for stops with at least "
+                "1,501 training observations and a training span strictly "
+                "greater than seven days."
             ),
         },
         "features": CATEGORICAL_FEATURES + NUMERIC_FEATURES,
@@ -441,10 +530,11 @@ def main() -> None:
         quality,
         arguments.allow_small_dataset,
     )
-    train_frame, test_frame = chronological_split(
+    train_frame, test_frame = calendar_week_time_split(
         frame,
         arguments.test_fraction,
     )
+    stop_training_quality = get_stop_training_quality(train_frame)
 
     feature_columns = CATEGORICAL_FEATURES + NUMERIC_FEATURES
     model = build_pipeline()
@@ -464,6 +554,7 @@ def main() -> None:
         baseline_source_counts,
         arguments.baseline_mae,
         readiness_passed,
+        stop_training_quality,
     )
 
     arguments.output_dir.mkdir(parents=True, exist_ok=True)

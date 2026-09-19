@@ -2,12 +2,14 @@ package com.zachary.transportation_reliability_platform.service.impl;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zachary.transportation_reliability_platform.common.exception.LiveDataUnavailableException;
 import com.zachary.transportation_reliability_platform.dto.LiveTripStopDelayResponse;
 import com.zachary.transportation_reliability_platform.event.TripUpdateEvent;
 import com.zachary.transportation_reliability_platform.service.LiveTripStateService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
@@ -96,6 +98,11 @@ public class RedisLiveTripStateService implements LiveTripStateService {
                     "Unable to serialize live trip state",
                     exception
             );
+        } catch (DataAccessException exception) {
+            // Let this independent Kafka consumer retry Redis projection work.
+            // The PostgreSQL observation consumer has a different group and is
+            // therefore not blocked by a cache outage.
+            throw unavailable(exception);
         }
     }
 
@@ -104,29 +111,33 @@ public class RedisLiveTripStateService implements LiveTripStateService {
             Long feedVersionId,
             String externalTripId
     ) {
-        Map<Object, Object> entries = stringRedisTemplate.opsForHash().entries(
-                tripKey(feedVersionId, externalTripId)
-        );
+        try {
+            Map<Object, Object> entries = stringRedisTemplate.opsForHash().entries(
+                    tripKey(feedVersionId, externalTripId)
+            );
 
-        List<LiveTripStopDelayResponse> states = new ArrayList<>();
+            List<LiveTripStopDelayResponse> states = new ArrayList<>();
 
-        for (Object value : entries.values()) {
-            try {
-                states.add(objectMapper.readValue(
-                        value.toString(),
-                        LiveTripStopDelayResponse.class
-                ));
-            } catch (JsonProcessingException exception) {
-                // A corrupt cache value should not make the live API unusable.
-                log.warn("Ignoring unreadable cached trip state", exception);
+            for (Object value : entries.values()) {
+                try {
+                    states.add(objectMapper.readValue(
+                            value.toString(),
+                            LiveTripStopDelayResponse.class
+                    ));
+                } catch (JsonProcessingException exception) {
+                    // A corrupt cache value should not make the live API unusable.
+                    log.warn("Ignoring unreadable cached trip state", exception);
+                }
             }
-        }
 
-        return states.stream()
-                .sorted(Comparator.comparing(
-                        LiveTripStopDelayResponse::stopSequence
-                ))
-                .toList();
+            return states.stream()
+                    .sorted(Comparator.comparing(
+                            LiveTripStopDelayResponse::stopSequence
+                    ))
+                    .toList();
+        } catch (DataAccessException exception) {
+            throw unavailable(exception);
+        }
     }
 
     private String tripKey(Long feedVersionId, String externalTripId) {
@@ -139,5 +150,12 @@ public class RedisLiveTripStateService implements LiveTripStateService {
 
     private String observedAtKey(String stateKey) {
         return stateKey + ":observed-at";
+    }
+
+    private LiveDataUnavailableException unavailable(DataAccessException exception) {
+        return new LiveDataUnavailableException(
+                "Live trip-delay data is temporarily unavailable",
+                exception
+        );
     }
 }

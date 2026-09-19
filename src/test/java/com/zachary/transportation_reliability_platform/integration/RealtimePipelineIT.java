@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zachary.transportation_reliability_platform.event.TripUpdateEvent;
 import com.zachary.transportation_reliability_platform.entity.AppUser;
 import com.zachary.transportation_reliability_platform.security.JwtService;
+import com.zachary.transportation_reliability_platform.service.KafkaOutboxService;
 import com.zachary.transportation_reliability_platform.service.producer.TripUpdateEventProducer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -74,6 +75,9 @@ class RealtimePipelineIT {
     private TripUpdateEventProducer tripUpdateEventProducer;
 
     @Autowired
+    private KafkaOutboxService kafkaOutboxService;
+
+    @Autowired
     private TestRestTemplate restTemplate;
 
     @Autowired
@@ -103,6 +107,9 @@ class RealtimePipelineIT {
         // at-least-once Kafka delivery idempotent.
         tripUpdateEventProducer.publish(event);
         tripUpdateEventProducer.publish(event);
+        // Scheduling is deliberately disabled for this test. Flush the durable
+        // outbox explicitly so the test still exercises the production hand-off.
+        kafkaOutboxService.dispatchDueEvents();
 
         awaitUntil("the Kafka consumer to persist one observation", () ->
                 observationCount(eventId) == 1

@@ -4,6 +4,7 @@ import com.zachary.transportation_reliability_platform.dto.response.NtaVehiclePo
 import com.zachary.transportation_reliability_platform.service.impl.NtaVehiclePositionIngestionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -26,6 +27,13 @@ public class NtaVehiclePositionPollingJob {
     @Scheduled(
             initialDelayString = "${app.nta.vehicle-position-polling.initial-delay-ms}",
             fixedDelayString = "${app.nta.vehicle-position-polling.fixed-delay-ms}"
+    )
+    // Separate from the Trip Updates lock: both NTA feeds may poll in parallel,
+    // but no second application instance can duplicate this Vehicles request.
+    @SchedulerLock(
+            name = "nta-vehicle-positions-poll",
+            lockAtLeastFor = "PT5M",
+            lockAtMostFor = "PT15M"
     )
     public void pollVehiclePositions() {
         try {

@@ -1,4 +1,4 @@
-# Transportation Reliability Platform
+ # Transportation Reliability Platform
 
 [![Backend quality gate](https://github.com/Zachary-Yan6/Transportation-reliability-platform/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/Zachary-Yan6/Transportation-reliability-platform/actions/workflows/backend-ci.yml)
 
@@ -24,6 +24,9 @@ NTA static GTFS + GTFS-Realtime
              |
              v
   Spring Boot collectors / parsers
+             |
+             v
+PostgreSQL transactional outbox
              |
              v
  Kafka topics (trip updates, vehicle positions)
@@ -139,7 +142,24 @@ Authorization: Bearer <access-token>
 | `USER` or `ADMIN` | Dashboard, routes, stops, trips, live vehicles, reliability and delay-estimate reads |
 | `ADMIN` | NTA raw/preview/publish endpoints, GTFS import and refresh, event tooling, AI training-data endpoints, and alert creation |
 
-`/ws/live` is public because a browser's native WebSocket handshake cannot attach an `Authorization` header. It emits only refresh notifications, not protected business data; protected REST endpoints still enforce JWT authorization.
+### Public WebSocket security contract
+
+`/ws/live` is intentionally public because a browser's native WebSocket
+handshake cannot attach an `Authorization` header. It is not a data-delivery
+API. Its complete public message schema is limited to an invalidation `type`
+and an `emittedAt` timestamp, for example:
+
+```json
+{ "type": "vehicle-positions", "emittedAt": "2026-09-19T12:00:00Z" }
+```
+
+- It may notify the browser that a non-sensitive resource has changed.
+- It must not send vehicle coordinates, delay values, account details, driver
+  information, access tokens, or any other protected business data.
+- After an invalidation, the client obtains the actual resource through the
+  existing JWT-protected REST API.
+- Adding a message field or turning this endpoint into a data stream requires
+  a security review and an authenticated WebSocket design before release.
 
 ## Core API map
 
@@ -160,6 +180,25 @@ The application has many detailed endpoints. The most useful user-facing reads a
 
 Admin development endpoints under `/api/v1/nta/**` support inspecting raw NTA feeds, previewing normalized content, manually publishing controlled snapshots, and reading polling runs. They are deliberately restricted to administrators.
 
+## API rate limits and model protection
+
+Redis-backed token buckets apply per authenticated account; requests without a
+valid account are grouped by source IP. The buckets are shared by application
+instances, so adding replicas does not multiply a caller's budget.
+
+| Request category | Default budget | Behaviour when exhausted |
+| --- | --- | --- |
+| Normal REST reads and writes | 120 requests/minute | `429 Too Many Requests` with `Retry-After` |
+| One stop delay estimate | 20 requests/minute | `429 Too Many Requests` with `Retry-After` |
+| Batch trip delay estimates | Uses 5 inference tokens/request | `429 Too Many Requests` with `Retry-After` |
+| Admin NTA, GTFS, event and AI endpoints | 10 requests/minute | `429 Too Many Requests` with `Retry-After` |
+
+The trained-model adapter also permits only two concurrent Python processes per
+backend instance. When this local bulkhead is full, the delay-estimate service
+uses its existing live/historical fallback rather than queueing unbounded work.
+Frontend code should use the batch trip-estimates endpoint and refresh only
+visible data; rate limiting is a safety net, not a replacement for batching.
+
 Runnable request examples are available in:
 
 - `src/main/java/com/zachary/transportation_reliability_platform/api-tests.http`
@@ -171,11 +210,18 @@ Runnable request examples are available in:
 
 1. Static GTFS must be imported before real-time trip updates can be matched to routes, trips, stops, and scheduled times.
 2. The scheduler fetches NTA trip updates every five minutes by default. It is configured to process all routes unless a route filter is explicitly set.
-3. Events are sent to Kafka; consumers write idempotent historical observations to PostgreSQL and current state to Redis.
-4. Vehicle positions are stored as the latest value per vehicle in Redis. Historical vehicle trajectory storage is intentionally not enabled yet.
-5. Alerts are persisted with their active/resolved state.
+3. Valid NTA events first enter a PostgreSQL transactional outbox. A background dispatcher sends them to Kafka with bounded retry and exponential backoff; Kafka downtime therefore delays, rather than discards, collected data.
+4. Consumers write idempotent historical observations to PostgreSQL and current state to Redis.
+5. Vehicle positions are stored as the latest value per vehicle in Redis. Historical vehicle trajectory storage is intentionally not enabled yet.
+6. Alerts are persisted with their active/resolved state.
 
 Event identifiers and database uniqueness constraints make trip-delay persistence idempotent. Redis live-state writes use timestamp-aware atomic updates so an older message cannot overwrite a newer state. Live WebSocket broadcasts use versioned debouncing to avoid a stale scheduled notification winning a later update.
+
+### Dependency failure behaviour
+
+- **Kafka unavailable:** events remain in `kafka_outbox`, are retried with bounded exponential backoff, and move to the durable `DEAD` status after the configured maximum attempts. The outbox capacity is capped to apply backpressure rather than growing PostgreSQL without limit. Micrometer counters under `transit.kafka.outbox.*` expose enqueue, retry, sent, dead-letter, and backpressure events through `/actuator/metrics`.
+- **Redis unavailable:** historical PostgreSQL APIs continue to work. Live-only endpoints return `503 LIVE_DATA_UNAVAILABLE` instead of a generic server error. Delay-estimate endpoints treat Redis as optional and continue with the trained-model or historical-baseline fallback. Their shared Redis rate limit degrades to a bounded per-instance guard, while administrator endpoints remain fail-closed.
+- **Duplicate delivery:** a process failure after Kafka acknowledgement but before an outbox status update can resend an event. Historical persistence is protected by its unique event ID, while Redis projections compare observation timestamps, so this at-least-once behavior is safe.
 
 ## AI delay estimates
 
@@ -249,6 +295,14 @@ GitHub Actions runs the backend quality gate on pushes and pull requests. The wo
 | `APP_FRONTEND_ORIGIN` | Allowed frontend CORS origin |
 | `AI_TRAINED_MODEL_ENABLED` | Enables local Python trained-model inference |
 | `AI_PYTHON_COMMAND` | Python executable used for inference |
+| `AI_MODEL_MAX_CONCURRENT_INFERENCES` | Per-instance Python inference bulkhead size |
+| `API_RATE_LIMIT_ENABLED` | Enables Redis-backed HTTP rate limiting |
+| `API_RATE_LIMIT_NORMAL_CAPACITY` | Normal API token bucket capacity per minute |
+| `API_RATE_LIMIT_INFERENCE_CAPACITY` | Delay-estimate token bucket capacity per minute |
+| `API_RATE_LIMIT_ADMIN_CAPACITY` | Admin high-cost API token bucket capacity per minute |
+| `KAFKA_OUTBOX_MAX_PENDING_EVENTS` | Maximum durable Kafka backlog before ingestion applies backpressure |
+| `KAFKA_OUTBOX_MAX_ATTEMPTS` | Delivery attempts before an outbox record enters `DEAD` status |
+| `KAFKA_OUTBOX_DISPATCH_INTERVAL_MS` | Interval at which due outbox records are sent to Kafka |
 
 See `src/main/resources/application.yml` for the complete local-development defaults.
 

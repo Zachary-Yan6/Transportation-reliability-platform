@@ -4,6 +4,7 @@ import com.zachary.transportation_reliability_platform.dto.response.NtaStaticGtf
 import com.zachary.transportation_reliability_platform.service.impl.NtaStaticGtfsRefreshService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -20,6 +21,13 @@ public class NtaStaticGtfsPollingJob {
     @Scheduled(
             initialDelayString = "${app.nta.static-gtfs.polling.initial-delay-ms}",
             fixedDelayString = "${app.nta.static-gtfs.polling.fixed-delay-ms}"
+    )
+    // Static GTFS imports can be large. Prevent concurrent feed activation,
+    // while releasing a crashed instance's lock after a bounded recovery time.
+    @SchedulerLock(
+            name = "nta-static-gtfs-refresh",
+            lockAtLeastFor = "PT6H",
+            lockAtMostFor = "PT7H"
     )
     public void refreshStaticGtfs() {
         try {
